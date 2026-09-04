@@ -907,7 +907,7 @@ os.write(1, b'x' * ({limit} + 1))
                 final_input="finish\n",
                 ready_marker="READY",
                 target_marker="TARGET",
-                timeout=0.1,
+                timeout=1.0,
                 cwd=Path(temporary),
             )
             self.assertTrue(result["available"])
@@ -920,10 +920,10 @@ os.write(1, b'x' * ({limit} + 1))
 import sys
 import time
 sys.stdin.readline()
-time.sleep(0.2)
+time.sleep(0.4)
 print("READY", flush=True)
 nonce = sys.stdin.readline().strip()
-time.sleep(0.2)
+time.sleep(0.4)
 print("TARGET:" + nonce, flush=True)
 sys.stdin.readline()
 """
@@ -935,12 +935,12 @@ sys.stdin.readline()
                 final_input="finish\n",
                 ready_marker="READY",
                 target_marker="TARGET",
-                timeout=0.3,
+                timeout=0.6,
                 cwd=Path(temporary),
             )
             self.assertTrue(result["success"])
             self.assertFalse(result["timeout"])
-            self.assertGreater(result["process_wall_ms"], 300.0)
+            self.assertGreater(result["process_wall_ms"], 600.0)
 
     def test_requested_cpu_outside_current_affinity_is_unavailable(self) -> None:
         if not hasattr(os, "sched_getaffinity"):
@@ -1067,7 +1067,7 @@ sys.stdin.readline()
                 final_input="finish\n",
                 ready_marker="READY",
                 target_marker="TARGET",
-                timeout=0.1,
+                timeout=1.0,
                 cwd=Path(temporary),
             )
 

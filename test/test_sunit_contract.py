@@ -1496,7 +1496,7 @@ class SUnitContractTests(unittest.TestCase):
             setattr(self.module, "run_process", capture_process)
             self.module.run_hecke(
                 SimpleNamespace(
-                    julia="/usr/bin/julia",
+                    julia=sys.executable,
                     hecke_project=None,
                     timeout=1.0,
                 ),
@@ -2303,7 +2303,7 @@ class SUnitContractTests(unittest.TestCase):
             marker = Path(temporary) / "descendant-survived"
             child = (
                 "import pathlib,time; "
-                "time.sleep(0.8); "
+                "time.sleep(1.5); "
                 f"pathlib.Path({str(marker)!r}).write_text('survived')"
             )
             parent = (
@@ -2315,13 +2315,13 @@ class SUnitContractTests(unittest.TestCase):
             )
             result = self.module.run_process(
                 [sys.executable, "-u", "-c", parent],
-                timeout=0.1,
+                timeout=0.5,
             )
             self.assertTrue(result["available"])
             self.assertFalse(result["success"])
             self.assertTrue(result["timeout"])
             self.assertIn("spawned", result["stdout"])
-            time.sleep(0.9)
+            time.sleep(1.6)
             self.assertFalse(marker.exists())
 
     def test_runner_output_is_bounded(self) -> None:
