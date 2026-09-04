@@ -1,0 +1,16 @@
+schema_version = 1
+# Copy to .silex-bench.local.toml, which is ignored, and uncomment only the
+# overrides needed on this host. PATH and conventional workspace discovery are
+# used when a value is absent.
+# workspace = "/path/to/workspace"
+# silex_source = "/path/to/workspace/silex"
+# silex_build_dir = "/path/to/workspace/silex/build/benchmark-adapters"
+# gp = "/path/to/gp"
+# julia = "/path/to/julia"
+# hecke_project = "/path/to/JuliaProject"
+# magma = "/path/to/magma"
+
+# Publication runs comparing PARI also need an explicit, matching source tree
+# and release pin.
+# pari_version = "X.Y.Z"
+# pari_source = "/path/to/pari-source"

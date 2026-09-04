@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "silex-bench"
+version = "0.1.0"
+description = "Extensible correctness-gated comparative benchmarks for Silex"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE", "NOTICE.md", "THIRD_PARTY_NOTICES.md"]
+authors = [{name = "William Youmans"}]
+classifiers = [
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/wjyoumans/silex-bench"
+Repository = "https://github.com/wjyoumans/silex-bench"
+Issues = "https://github.com/wjyoumans/silex-bench/issues"
+
+[project.optional-dependencies]
+plot = ["matplotlib>=3.8"]
+test = []
+
+[project.scripts]
+silex-bench = "silex_bench.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+silex_bench = [
+  "data/corpora/*.json",
+  "data/profiles/*.toml",
+  "data/suites/*.toml",
+]

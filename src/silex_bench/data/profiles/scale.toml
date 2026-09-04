@@ -1,0 +1,13 @@
+schema_version = 1
+id = "scale"
+description = "Long-running scale study over curated large cases."
+include_tags = ["scale"]
+exclude_tags = []
+repetitions = 5
+warmups = 1
+timeout_seconds = 3600
+budget_seconds = 86400
+threads = 1
+publication = false
+minimum_repetitions = 1
+require_clean_sources = false

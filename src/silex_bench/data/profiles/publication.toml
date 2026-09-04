@@ -1,0 +1,13 @@
+schema_version = 1
+id = "publication"
+description = "Strict publication candidate; pass --cpu and use clean pinned sources."
+include_tags = ["publication"]
+exclude_tags = []
+repetitions = 9
+warmups = 1
+timeout_seconds = 7200
+budget_seconds = 259200
+threads = 1
+publication = true
+minimum_repetitions = 9
+require_clean_sources = true

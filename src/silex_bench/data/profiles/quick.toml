@@ -1,0 +1,13 @@
+schema_version = 1
+id = "quick"
+description = "Small correctness/performance loop for implementation work."
+include_tags = ["quick"]
+exclude_tags = []
+repetitions = 1
+warmups = 0
+timeout_seconds = 180
+budget_seconds = 1800
+threads = 1
+publication = false
+minimum_repetitions = 1
+require_clean_sources = false

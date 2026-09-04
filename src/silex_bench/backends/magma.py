@@ -1,0 +1,575 @@
+"""Magma backend with rigorous, isolated benchmark operations.
+
+The class/unit proof flags and operation boundaries in this adapter follow the
+Magma V2.28 handbook.  In particular, the proven route deliberately uses
+``Proof := "Full"`` and ``GRH := false``; it does not select or tune Magma's
+underlying algorithms.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+from pathlib import Path
+from typing import Any
+
+from ..model import (
+    BackendContext,
+    FieldSpec,
+    SampleRequest,
+    canonical_invariants,
+    polynomial_expr,
+)
+from ..process import (
+    TARGET_NONCE_PLACEHOLDER,
+    parse_key_values,
+    resolve_executable,
+    run_marked_process,
+    run_process,
+)
+from .base import (
+    BackendAdapter,
+    identity_with_executed_digest,
+    parse_bool,
+    parse_float,
+    parse_int,
+    process_state_is_valid,
+    successful_probe,
+    unavailable,
+    unavailable_probe,
+)
+
+
+_READY_MARKER = "__SILEX_BENCH_MAGMA_READY__"
+_TARGET_MARKER = "__SILEX_BENCH_MAGMA_TARGET_DONE__"
+_LICENSE_FAILURE_PATTERNS = (
+    "couldn't create socket for mac address startup",
+    "could not create socket for mac address startup",
+    "unable to find a valid magma license",
+    "no valid magma license",
+    "this machine is not licensed",
+    "magma license manager",
+)
+
+
+def _environment(context: BackendContext) -> dict[str, str]:
+    return {**os.environ, **context.environment}
+
+
+def _configured_executable(context: BackendContext) -> tuple[str, str]:
+    configured = context.tools.get("magma")
+    if configured is not None and str(configured).strip():
+        return str(configured), "tools.magma"
+    environment = context.environment.get("SILEX_BENCH_MAGMA")
+    if not environment:
+        environment = os.environ.get("SILEX_BENCH_MAGMA")
+    if environment:
+        return environment, "SILEX_BENCH_MAGMA"
+    return "magma", "PATH"
+
+
+def _resolve_magma(context: BackendContext) -> tuple[str | None, str | None]:
+    candidate, source = _configured_executable(context)
+    executable = resolve_executable(candidate)
+    if executable is None:
+        return None, f"Magma executable from {source} was not found: {candidate}"
+    return executable, None
+
+
+def _license_error(text: str) -> str | None:
+    lowered = text.lower()
+    if any(pattern in lowered for pattern in _LICENSE_FAILURE_PATTERNS):
+        return (
+            "Magma could not initialize its host-bound license/socket. "
+            "Run silex-bench outside the filesystem sandbox or grant host "
+            "execution for the configured Magma batch command."
+        )
+    return None
+
+
+def _failure_detail(raw: dict[str, Any]) -> str:
+    output = "\n".join(
+        str(raw.get(key, "")) for key in ("stdout", "stderr")
+    ).strip()
+    license_error = _license_error(output)
+    if license_error is not None:
+        return license_error
+    message = str(raw.get("error") or "Magma execution failed")
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    if lines:
+        message += f": {lines[-1][:500]}"
+    return message
+
+
+def _is_license_failure(raw: dict[str, Any]) -> bool:
+    output = "\n".join(
+        str(raw.get(key, "")) for key in ("stdout", "stderr")
+    )
+    return _license_error(output) is not None
+
+
+def _parse_invariants(value: str | None) -> list[str] | None:
+    if value is None:
+        return None
+    return canonical_invariants(re.findall(r"-?\d+", value))
+
+
+def _field_program(field: FieldSpec, suffix: str) -> str:
+    variable = f"x_{suffix}"
+    polynomial = polynomial_expr(field.coefficients_low_to_high, variable)
+    return f"""
+Qx_{suffix}<{variable}> := PolynomialRing(Rationals());
+f_{suffix} := {polynomial};
+K_{suffix}<a_{suffix}> := NumberField(f_{suffix});
+"""
+
+
+def _warmup_program(operation: str, field: FieldSpec) -> str:
+    setup = _field_program(field, "warm")
+    if operation == "class_unit_proven":
+        body = """
+O_warm := MaximalOrder(K_warm);
+C_warm, class_map_warm := ClassGroup(O_warm : Proof := "Full");
+U_warm, unit_map_warm := UnitGroup(O_warm : GRH := false);
+"""
+    elif operation == "maximal_order":
+        body = "O_warm := MaximalOrder(K_warm);\n"
+    elif operation == "ideal_multiply":
+        body = """
+O_warm := MaximalOrder(K_warm);
+I2_warm := ideal<O_warm | 2>;
+I3_warm := ideal<O_warm | 3>;
+product_warm := I2_warm * I3_warm;
+"""
+    elif operation == "element_square_root":
+        body = """
+square_warm := (K_warm!1 + a_warm)^2;
+found_warm, root_warm := IsSquare(square_warm);
+"""
+    else:  # The request model validates operations before adapter dispatch.
+        raise ValueError(f"unsupported Magma operation: {operation}")
+    return setup + body
+
+
+def _program_parts(request: SampleRequest) -> tuple[str, str, str]:
+    warmup = ""
+    if request.sample_kind == "warm_algorithm":
+        if request.warmup is None:
+            raise ValueError("warm_algorithm sample requires a warmup field")
+        if request.warmup.degree != request.field.degree:
+            raise ValueError("Magma warmup field must have the target degree")
+        if (
+            request.warmup.id == request.field.id
+            or request.warmup.coefficients_low_to_high
+            == request.field.coefficients_low_to_high
+        ):
+            raise ValueError("Magma warmup field must be distinct from the target")
+        warmup = _warmup_program(request.operation, request.warmup)
+
+    ready = f"""
+SetNthreads(1);
+SetSeed({request.seed});
+{warmup}
+SetSeed({request.seed});
+"""
+
+    setup = _field_program(request.field, "target")
+    if request.operation == "class_unit_proven":
+        target = f"""
+target_cpu_start := Cputime();
+target_wall_start := Realtime();
+field_cpu_start := Cputime();
+field_wall_start := Realtime();
+{setup}
+field_cpu_seconds := Cputime(field_cpu_start);
+field_wall_seconds := Realtime(field_wall_start);
+maximal_cpu_start := Cputime();
+maximal_wall_start := Realtime();
+O_target := MaximalOrder(K_target);
+maximal_cpu_seconds := Cputime(maximal_cpu_start);
+maximal_wall_seconds := Realtime(maximal_wall_start);
+class_cpu_start := Cputime();
+class_wall_start := Realtime();
+C_target, class_map_target := ClassGroup(O_target : Proof := "Full");
+class_cpu_seconds := Cputime(class_cpu_start);
+class_wall_seconds := Realtime(class_wall_start);
+unit_cpu_start := Cputime();
+unit_wall_start := Realtime();
+U_target, unit_map_target := UnitGroup(O_target : GRH := false);
+unit_cpu_seconds := Cputime(unit_cpu_start);
+unit_wall_seconds := Realtime(unit_wall_start);
+target_internal_cpu_seconds := Cputime(target_cpu_start);
+target_internal_wall_seconds := Realtime(target_wall_start);
+printf "{_TARGET_MARKER}:{TARGET_NONCE_PLACEHOLDER}\\n";
+"""
+        final = """
+r1_target, r2_target := Signature(K_target);
+printf "class_order=%o\\n", Order(C_target);
+printf "class_invariants=%o\\n", AbelianInvariants(C_target);
+printf "unit_rank=%o\\n", UnitRank(O_target);
+printf "signature_r1=%o\\n", r1_target;
+printf "signature_r2=%o\\n", r2_target;
+printf "maximal_order_discriminant=%o\\n", Discriminant(O_target);
+printf "field_cpu_seconds=%o\\n", field_cpu_seconds;
+printf "field_wall_seconds=%o\\n", field_wall_seconds;
+printf "maximal_cpu_seconds=%o\\n", maximal_cpu_seconds;
+printf "maximal_wall_seconds=%o\\n", maximal_wall_seconds;
+printf "class_cpu_seconds=%o\\n", class_cpu_seconds;
+printf "class_wall_seconds=%o\\n", class_wall_seconds;
+printf "unit_cpu_seconds=%o\\n", unit_cpu_seconds;
+printf "unit_wall_seconds=%o\\n", unit_wall_seconds;
+printf "target_internal_cpu_seconds=%o\\n", target_internal_cpu_seconds;
+printf "target_internal_wall_seconds=%o\\n", target_internal_wall_seconds;
+quit;
+"""
+    elif request.operation == "maximal_order":
+        target = f"""
+target_cpu_start := Cputime();
+target_wall_start := Realtime();
+{setup}
+O_target := MaximalOrder(K_target);
+target_internal_cpu_seconds := Cputime(target_cpu_start);
+target_internal_wall_seconds := Realtime(target_wall_start);
+printf "{_TARGET_MARKER}:{TARGET_NONCE_PLACEHOLDER}\\n";
+"""
+        final = """
+printf "maximal_order_discriminant=%o\\n", Discriminant(O_target);
+printf "target_internal_cpu_seconds=%o\\n", target_internal_cpu_seconds;
+printf "target_internal_wall_seconds=%o\\n", target_internal_wall_seconds;
+quit;
+"""
+    elif request.operation == "ideal_multiply":
+        ready += setup + """
+O_target := MaximalOrder(K_target);
+I2_target := ideal<O_target | 2>;
+I3_target := ideal<O_target | 3>;
+"""
+        target = f"""
+target_cpu_start := Cputime();
+target_wall_start := Realtime();
+product_target := I2_target * I3_target;
+target_internal_cpu_seconds := Cputime(target_cpu_start);
+target_internal_wall_seconds := Realtime(target_wall_start);
+printf "{_TARGET_MARKER}:{TARGET_NONCE_PLACEHOLDER}\\n";
+"""
+        final = """
+printf "ideal_norm=%o\\n", Norm(product_target);
+printf "target_internal_cpu_seconds=%o\\n", target_internal_cpu_seconds;
+printf "target_internal_wall_seconds=%o\\n", target_internal_wall_seconds;
+quit;
+"""
+    elif request.operation == "element_square_root":
+        ready += setup + "square_target := (K_target!1 + a_target)^2;\n"
+        target = f"""
+target_cpu_start := Cputime();
+target_wall_start := Realtime();
+root_found, root_target := IsSquare(square_target);
+target_internal_cpu_seconds := Cputime(target_cpu_start);
+target_internal_wall_seconds := Realtime(target_wall_start);
+printf "{_TARGET_MARKER}:{TARGET_NONCE_PLACEHOLDER}\\n";
+"""
+        final = """
+root_verified := false;
+if root_found then
+    root_verified := root_target^2 eq square_target;
+end if;
+printf "root_found=%o\\n", root_found;
+printf "root_verified=%o\\n", root_verified;
+printf "target_internal_cpu_seconds=%o\\n", target_internal_cpu_seconds;
+printf "target_internal_wall_seconds=%o\\n", target_internal_wall_seconds;
+quit;
+"""
+    else:
+        raise ValueError(f"unsupported Magma operation: {request.operation}")
+    ready += f'printf "{_READY_MARKER}\\n";\n'
+    return ready, target, final
+
+
+def _milliseconds(values: dict[str, str], key: str) -> float | None:
+    seconds = parse_float(values, key)
+    return None if seconds is None else seconds * 1000.0
+
+
+def _normalized_result(
+    operation: str, values: dict[str, str]
+) -> tuple[dict[str, Any], list[str]]:
+    result: dict[str, Any]
+    required: list[str]
+    if operation == "class_unit_proven":
+        r1 = parse_int(values, "signature_r1")
+        r2 = parse_int(values, "signature_r2")
+        result = {
+            "class_order": values.get("class_order"),
+            "class_invariants": _parse_invariants(
+                values.get("class_invariants")
+            ),
+            "unit_rank": parse_int(values, "unit_rank"),
+            "signature": [r1, r2]
+            if r1 is not None and r2 is not None
+            else None,
+            "maximal_order_discriminant": values.get(
+                "maximal_order_discriminant"
+            ),
+        }
+        required = [
+            "class_order",
+            "class_invariants",
+            "unit_rank",
+            "signature",
+            "maximal_order_discriminant",
+        ]
+    elif operation == "maximal_order":
+        result = {
+            "maximal_order_discriminant": values.get(
+                "maximal_order_discriminant"
+            )
+        }
+        required = ["maximal_order_discriminant"]
+    elif operation == "ideal_multiply":
+        result = {"ideal_norm": values.get("ideal_norm")}
+        required = ["ideal_norm"]
+    elif operation == "element_square_root":
+        result = {
+            "root_found": parse_bool(values, "root_found"),
+            "root_verified": parse_bool(values, "root_verified"),
+        }
+        required = ["root_found", "root_verified"]
+    else:
+        raise ValueError(f"unsupported Magma operation: {operation}")
+    missing = [key for key in required if result.get(key) is None]
+    if operation == "element_square_root":
+        missing.extend(
+            key
+            for key in required
+            if result.get(key) is not True and key not in missing
+        )
+    return result, missing
+
+
+def _timing(
+    operation: str,
+    values: dict[str, str],
+    *,
+    target_cpu_ms: float | None,
+    target_wall_ms: float | None,
+    marked_target_cpu_ms: float | None,
+    marked_target_wall_ms: float | None,
+    marked_process_affinity: list[int] | None,
+) -> dict[str, Any]:
+    scopes = {
+        "class_unit_proven": "field_maximal_order_class_group_unit_group",
+        "maximal_order": "field_creation_and_maximal_order",
+        "ideal_multiply": "ideal_multiplication_only",
+        "element_square_root": "number_field_element_is_square_only",
+    }
+    timing: dict[str, Any] = {
+        "scope": scopes[operation],
+        "algorithm_clock": "magma_cputime",
+        "wall_clock": "magma_realtime",
+        "component_clock": "magma_cputime_and_realtime",
+        "warmup_excluded": True,
+        "target_cpu_ms": target_cpu_ms,
+        "target_wall_ms": target_wall_ms,
+        "internal_cpu_ms": _milliseconds(
+            values, "target_internal_cpu_seconds"
+        ),
+        "internal_wall_ms": _milliseconds(
+            values, "target_internal_wall_seconds"
+        ),
+        "marked_target_cpu_ms": marked_target_cpu_ms,
+        "marked_target_wall_ms": marked_target_wall_ms,
+        "marked_process_affinity": marked_process_affinity,
+    }
+    if operation == "class_unit_proven":
+        timing["components_ms"] = {
+            component: {
+                "cpu_ms": _milliseconds(values, f"{component}_cpu_seconds"),
+                "wall_ms": _milliseconds(
+                    values, f"{component}_wall_seconds"
+                ),
+            }
+            for component in ("field", "maximal", "class", "unit")
+        }
+    return timing
+
+
+class MagmaBackend(BackendAdapter):
+    """Run Magma V2.28 operations in a fresh marked process per sample."""
+
+    name = "magma"
+
+    def __init__(self) -> None:
+        self._probe: dict[str, Any] | None = None
+
+    def probe(self, context: BackendContext) -> dict[str, Any]:
+        if self._probe is not None:
+            return dict(self._probe)
+        executable, error = _resolve_magma(context)
+        if executable is None:
+            self._probe = unavailable_probe(
+                self.name, error or "Magma is unavailable"
+            )
+            return dict(self._probe)
+        program = """
+version_major, version_minor, version_patch := GetVersion();
+printf "magma_version=%o.%o-%o\\n", version_major, version_minor, version_patch;
+quit;
+"""
+        raw = run_process(
+            [executable, "-bn"],
+            timeout=min(15.0, max(1.0, context.timeout_seconds)),
+            cwd=context.bench_root,
+            stdin=program,
+            env=_environment(context),
+        )
+        values = parse_key_values(str(raw.get("stdout", "")))
+        if (
+            not process_state_is_valid(raw)
+            or not raw["success"]
+            or "magma_version" not in values
+        ):
+            detail = _failure_detail(raw)
+            self._probe = unavailable_probe(
+                self.name,
+                detail,
+                timeout=raw.get("timeout") is True,
+            )
+            return dict(self._probe)
+        identity = {
+            "engine": self.name,
+            "executable": str(Path(executable).resolve()),
+            "version": values["magma_version"],
+        }
+        identity = identity_with_executed_digest(identity, raw)
+        self._probe = successful_probe(self.name, identity)
+        return dict(self._probe)
+
+    def run(
+        self, request: SampleRequest, context: BackendContext
+    ) -> dict[str, Any]:
+        probe = self.probe(context)
+        if not probe.get("available"):
+            payload = unavailable(self.name, str(probe.get("error")))
+            payload["engine_identity"] = probe.get("engine_identity")
+            return payload
+        executable = str(probe["engine_identity"]["executable"])
+        try:
+            ready, target, final = _program_parts(request)
+        except ValueError as exc:
+            payload = unavailable(self.name, str(exc))
+            payload.update(
+                {
+                    "available": True,
+                    "status": "invalid_request",
+                    "executable": executable,
+                }
+            )
+            return payload
+
+        raw = run_marked_process(
+            [executable, "-bn"],
+            ready_input=ready,
+            target_input=target,
+            final_input=final,
+            ready_marker=_READY_MARKER,
+            target_marker=_TARGET_MARKER,
+            timeout=context.timeout_seconds,
+            cwd=context.bench_root,
+            cpu=context.cpu,
+            env=_environment(context),
+        )
+        values = parse_key_values(str(raw.get("stdout", "")))
+        result, missing = _normalized_result(request.operation, values)
+        process_success = process_state_is_valid(raw) and raw["success"]
+        success = process_success and not missing
+        license_failure = _is_license_failure(raw)
+        if success:
+            status = "ok"
+            run_error = None
+        elif license_failure:
+            status = "unavailable"
+            run_error = _failure_detail(raw)
+        elif raw.get("timeout") is True:
+            status = "timeout"
+            run_error = str(raw.get("error") or "Magma process timed out")
+        else:
+            status = "compute_error"
+            run_error = _failure_detail(raw)
+            if process_success and missing:
+                run_error = (
+                    "Magma output omitted required values: "
+                    + ", ".join(missing)
+                )
+
+        proof: dict[str, Any] = {}
+        if request.operation == "class_unit_proven":
+            proof = {
+                "certification_status": "proven" if success else "unknown",
+                "class_group_proof_status": (
+                    "proven" if success else "unknown"
+                ),
+                "unit_group_proof_status": (
+                    "proven" if success else "unknown"
+                ),
+                "regulator_proof_status": (
+                    "proven" if success else "unknown"
+                ),
+                "proof_complete": success,
+                "final_result_published": success,
+            }
+        else:
+            proof = {
+                "certification_status": "not_applicable",
+                "final_result_published": success,
+            }
+        marked_target_cpu_ms = raw.get("target_cpu_ms")
+        marked_target_wall_ms = raw.get("target_wall_ms")
+        internal_target_cpu_ms = _milliseconds(
+            values, "target_internal_cpu_seconds"
+        )
+        internal_target_wall_ms = _milliseconds(
+            values, "target_internal_wall_seconds"
+        )
+        target_cpu_ms = internal_target_cpu_ms
+        target_wall_ms = internal_target_wall_ms
+        identity = identity_with_executed_digest(
+            probe.get("engine_identity"), raw
+        )
+        payload = {
+            "engine": self.name,
+            "algorithm": "external",
+            "available": not license_failure,
+            "success": success,
+            "timeout": raw.get("timeout") is True,
+            "status": status,
+            "error": run_error,
+            "engine_identity": identity,
+            "target_cpu_ms": target_cpu_ms,
+            "target_wall_ms": target_wall_ms,
+            "process_wall_ms": raw.get("process_wall_ms"),
+            "cmd": raw.get("cmd"),
+            "result": result,
+            "proof": proof,
+            "timing": _timing(
+                request.operation,
+                values,
+                target_cpu_ms=target_cpu_ms,
+                target_wall_ms=target_wall_ms,
+                marked_target_cpu_ms=marked_target_cpu_ms,
+                marked_target_wall_ms=marked_target_wall_ms,
+                marked_process_affinity=raw.get("effective_affinity"),
+            ),
+        }
+        payload["timing"]["cpu_launcher_executable"] = raw.get(
+            "launcher_executable"
+        )
+        payload["timing"]["cpu_launcher_sha256"] = raw.get(
+            "launcher_executable_sha256"
+        )
+        if not success:
+            payload["diagnostics"] = {
+                "stdout": raw.get("stdout", ""),
+                "stderr": raw.get("stderr", ""),
+                "cmd": raw.get("cmd"),
+            }
+        return payload

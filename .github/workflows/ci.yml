@@ -1,0 +1,44 @@
+name: bench-ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.14"]
+    container: python:${{ matrix.python }}-bookworm
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Unit tests
+        run: >-
+          env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src
+          python3 -m unittest discover -s test -v
+      - name: Inspect the bundled quick plan
+        run: >-
+          env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src
+          python3 -m silex_bench --json plan
+          --suite number-field --profile quick
+      - name: List public extension points
+        run: >-
+          env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src
+          python3 -m silex_bench --json list
+      - name: Build source and wheel distributions
+        run: |
+          python3 -m pip install --disable-pip-version-check build
+          python3 -m build
+      - name: Installed-wheel smoke test
+        shell: bash
+        run: |
+          python3 -m pip install --disable-pip-version-check --force-reinstall dist/*.whl
+          cd /tmp
+          silex-bench --json list
+          silex-bench --json plan --suite number-field --profile quick

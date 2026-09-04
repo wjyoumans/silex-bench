@@ -1,0 +1,20 @@
+schema_version = 1
+id = "number-field"
+title = "Number-field correctness and performance comparisons"
+workloads = [
+  "class_unit_proven",
+  "maximal_order",
+  "ideal_multiply",
+  "element_square_root",
+  "sunit_proven",
+]
+backends = ["silex", "pari", "hecke", "magma"]
+required_pairs = [["silex", "pari"]]
+
+[corpora]
+number_fields = "../corpora/class_unit_fields.json"
+sunit = "../corpora/sunit_fields.json"
+
+[reports]
+primary_clock = "target_wall_ns"
+speedup = "baseline_over_candidate"
