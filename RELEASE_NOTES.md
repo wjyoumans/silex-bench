@@ -33,7 +33,7 @@ GPT-5.6, under the direction and review of William Youmans.
   SVG format, with views by degree and by `log10(abs(D_K))`. Exact signed
   maximal-order discriminants are retained in case metadata.
 - The publication profile uses three repetitions across the expanded
-  predeclared field slice and a 60-second observation ceiling. Hecke S-unit
+  default field slice and a 60-second observation ceiling. Hecke S-unit
   cells are explicitly excluded from this profile by policy. Default
   square-root selection is limited to degree 9; explicit case and timeout
   overrides remain supported. See the [policy record](docs/publication-policy.md)

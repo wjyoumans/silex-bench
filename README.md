@@ -104,7 +104,7 @@ how far it runs:
 - `quick`: small inputs and one observation for a fast development check;
 - `dev`: broader low-degree inputs and three repetitions;
 - `scale`: curated large inputs, five repetitions, and a long budget;
-- `publication`: three repetitions over the broadest predeclared corpus slice,
+- `publication`: three repetitions over the expanded default corpus slice,
   with strict provenance and execution gates. Hecke S-unit rows are excluded
   by policy from this profile with a default 60-second observation ceiling.
   The [publication policy record](docs/publication-policy.md) details the
