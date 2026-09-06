@@ -13,7 +13,7 @@ faster, and how that relationship changes as inputs grow.
 
 ## AI-assisted development disclosure
 
-Silex, Silex Bench, and the then-separate Silex Devtools repository were
+Silex and its companion repositories, Silex Bench and Silex Devtools, were
 built almost entirely with OpenAI Codex, initially using GPT-5.5 and later
 GPT-5.6, under the direction and review of William Youmans.
 
@@ -30,7 +30,8 @@ Automated work follows [AGENTS.md](AGENTS.md).
 
 ## Install
 
-Silex Bench supports Linux and Python 3.11 or newer. The process
+Silex Bench supports Linux and Python 3.11 or newer. Version 0.1.1 is in
+release preparation; 0.1.0 is the latest tagged release. The process
 supervision and CPU-affinity implementation uses Linux interfaces.
 
 Clone the public repository and install the command and plotting support with:
