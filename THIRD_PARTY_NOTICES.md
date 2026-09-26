@@ -19,7 +19,7 @@ independent or clean-room origin.
 ## PARI/GP source lineage
 
 The S-regulator computation in
-`src/silex_bench/sunit_backend.py:2291-2296` translates the identity
+`src/silex_bench/sunit_backend.py:2306-2312` translates the identity
 implemented by PARI/GP 2.17.3 in `src/basemath/bnfunits.c:203-234`, especially
 lines 213-228, and documented in `doc/usersch3.tex:20056-20071`: the ordinary
 regulator is multiplied by the S-class number and the logarithms of the norms
@@ -57,3 +57,13 @@ The mathematical calls, proof expectations, and source versions used for
 comparison are documented in `docs/backend-contracts.md` and
 `docs/sunit-contract.md`. Those references identify provenance and behavior;
 they do not change the licensing of an external system.
+
+## Migrated Silex Devtools guidance
+
+`docs/comparative-benchmarking.md` retains its Apache-2.0 source license and
+copyright notice from the then-separate Silex Devtools repository at commit
+`ee316759d7493349245b429d1066381cef14a955`. See the retained
+[source notice and modification record](LICENSES/Silex-Devtools-NOTICE.md)
+and [Apache-2.0 license](LICENSES/Apache-2.0.txt). This preserves the applicable
+source obligations without changing Silex Bench's overall GPL-3.0-or-later
+license.

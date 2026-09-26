@@ -24,6 +24,112 @@ from silex_bench.process import (
 
 
 class ProcessTests(unittest.TestCase):
+    def test_process_error_classification_precedes_cleanup(self) -> None:
+        now = [0.0]
+        supervisor = mock.Mock()
+
+        def cleanup(process):
+            now[0] = 11.0
+            return -15, b"", b""
+
+        with mock.patch("silex_bench.process.time.monotonic", side_effect=lambda: now[0]), mock.patch(
+            "silex_bench.process._supervised_popen", return_value=(supervisor, 12345)
+        ), mock.patch(
+            "silex_bench.process._bounded_communicate", side_effect=OSError("capture failed")
+        ), mock.patch("silex_bench.process._stop_process", side_effect=cleanup):
+            result = run_process([sys.executable, "-c", "pass"], timeout=10, cwd=Path.cwd())
+
+        self.assertFalse(result["success"])
+        self.assertFalse(result["timeout"])
+        self.assertEqual(result["error"], "capture failed")
+
+    def test_marked_protocol_error_classification_precedes_cleanup(self) -> None:
+        now = [0.0]
+        supervisor = mock.Mock(stdin=None)
+
+        def cleanup(process):
+            now[0] = 11.0
+            return -15, b"", b""
+
+        with mock.patch("silex_bench.process.time.monotonic", side_effect=lambda: now[0]), mock.patch(
+            "silex_bench.process._supervised_popen", return_value=(supervisor, 12345)
+        ), mock.patch("silex_bench.process._stop_process", side_effect=cleanup):
+            result = run_marked_process(
+                [sys.executable, "-c", "pass"], timeout=10, cwd=Path.cwd(),
+                ready_input="ready\n", target_input=f"{TARGET_NONCE_PLACEHOLDER}\n",
+                final_input="finish\n", ready_marker="READY", target_marker="TARGET",
+            )
+
+        self.assertFalse(result["success"])
+        self.assertFalse(result["timeout"])
+        self.assertEqual(result["error"], "marked process pipes are unavailable")
+
+    def test_launch_failure_classification_survives_supervisor_cleanup(self) -> None:
+        # Exercise the real handshake helper, whose cleanup runs before either
+        # public runner receives the failure. All processes and I/O are mocked.
+        for marked in (False, True):
+            for outcome in ("launch_error", "handshake_limit", "observation_deadline"):
+                with self.subTest(marked=marked, outcome=outcome):
+                    now = [0.0]
+                    timeout = 2.0 if outcome == "observation_deadline" else 10.0
+                    supervisor = mock.Mock()
+                    pinned = {
+                        "descriptors": (), "executable": sys.executable,
+                        "spawn": [sys.executable], "display": [sys.executable],
+                        "backend_digest": "fixture", "launcher_path": None,
+                        "launcher_digest": None, "immutable_inputs": [],
+                    }
+
+                    def select_handshake(readable, writable, exceptional, wait):
+                        if outcome == "launch_error":
+                            return readable, [], []
+                        now[0] += wait
+                        return [], [], []
+
+                    def cleanup(process):
+                        now[0] = 11.0
+                        return -15, b"", b""
+
+                    with mock.patch("silex_bench.process._pinned_command", return_value=pinned), mock.patch(
+                        "silex_bench.process.subprocess.Popen", return_value=supervisor
+                    ), mock.patch("silex_bench.process.time.monotonic", side_effect=lambda: now[0]), mock.patch(
+                        "silex_bench.process.select.select", side_effect=select_handshake
+                    ), mock.patch("silex_bench.process.os.read", return_value=b"ERROR launch failed\n"), mock.patch(
+                        "silex_bench.process._stop_process", side_effect=cleanup
+                    ) as stop:
+                        kwargs = dict(timeout=timeout, cwd=Path.cwd())
+                        if marked:
+                            result = run_marked_process(
+                                [sys.executable], **kwargs, ready_input="ready\n",
+                                target_input=f"{TARGET_NONCE_PLACEHOLDER}\n", final_input="finish\n",
+                                ready_marker="READY", target_marker="TARGET",
+                            )
+                        else:
+                            result = run_process([sys.executable], **kwargs)
+
+                    self.assertFalse(result["success"])
+                    self.assertEqual(result["timeout"], outcome == "observation_deadline")
+                    self.assertIn("launch failed" if outcome == "launch_error" else "timed out", result["error"])
+                    stop.assert_called_once_with(supervisor)
+
+    def test_process_interrupt_reaps_the_separate_session_supervisor(self) -> None:
+        supervisor = mock.Mock()
+        with tempfile.TemporaryDirectory() as temporary, mock.patch(
+            "silex_bench.process._supervised_popen",
+            return_value=(supervisor, 12345),
+        ), mock.patch(
+            "silex_bench.process._bounded_communicate",
+            side_effect=KeyboardInterrupt,
+        ), mock.patch("silex_bench.process._stop_process") as stop_process:
+            with self.assertRaises(KeyboardInterrupt):
+                run_process(
+                    [sys.executable, "-c", "raise SystemExit(0)"],
+                    timeout=1.0,
+                    cwd=Path(temporary),
+                )
+
+        stop_process.assert_called_once_with(supervisor)
+
     def test_immutable_memfd_sealing_supports_python_without_fcntl_names(
         self,
     ) -> None:
@@ -817,15 +923,8 @@ sys.stdin.readline()
             json.dumps(result)
 
     def test_marked_process_rejects_nonfinite_deadlines(self) -> None:
-        cases = (
-            {"timeout": float("inf"), "exit_grace": 1.0},
-            {"timeout": float("nan"), "exit_grace": 1.0},
-            {"timeout": 0.0, "exit_grace": 1.0},
-            {"timeout": 1.0, "exit_grace": float("inf")},
-            {"timeout": 1.0, "exit_grace": False},
-        )
-        for durations in cases:
-            with self.subTest(durations=durations), tempfile.TemporaryDirectory() as temporary:
+        for timeout in (float("inf"), float("nan"), 0.0, False):
+            with self.subTest(timeout=timeout), tempfile.TemporaryDirectory() as temporary:
                 result = run_marked_process(
                     [sys.executable, "-c", "raise SystemExit(99)"],
                     ready_input="start\n",
@@ -833,8 +932,8 @@ sys.stdin.readline()
                     final_input="finish\n",
                     ready_marker="READY",
                     target_marker="TARGET",
+                    timeout=timeout,
                     cwd=Path(temporary),
-                    **durations,
                 )
 
             self.assertFalse(result["available"])
@@ -915,7 +1014,7 @@ os.write(1, b'x' * ({limit} + 1))
             self.assertTrue(result["timeout"])
             self.assertEqual(result["error"], "marked process did not reach ready marker")
 
-    def test_marked_process_resets_budget_at_target_boundary(self) -> None:
+    def test_marked_process_uses_one_nonresetting_deadline(self) -> None:
         child = """
 import sys
 import time
@@ -938,9 +1037,9 @@ sys.stdin.readline()
                 timeout=0.6,
                 cwd=Path(temporary),
             )
-            self.assertTrue(result["success"])
-            self.assertFalse(result["timeout"])
-            self.assertGreater(result["process_wall_ms"], 600.0)
+            self.assertFalse(result["success"])
+            self.assertTrue(result["timeout"])
+            self.assertLess(result["process_wall_ms"], 800.0)
 
     def test_requested_cpu_outside_current_affinity_is_unavailable(self) -> None:
         if not hasattr(os, "sched_getaffinity"):

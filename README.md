@@ -13,7 +13,7 @@ faster, and how that relationship changes as inputs grow.
 
 ## AI-assisted development disclosure
 
-Silex and its companion repositories, Silex Bench and Silex Devtools, were
+Silex, Silex Bench, and the then-separate Silex Devtools repository were
 built almost entirely with OpenAI Codex, initially using GPT-5.5 and later
 GPT-5.6, under the direction and review of William Youmans.
 
@@ -24,13 +24,13 @@ GPT-5.6, under the direction and review of William Youmans.
 - [Silex Bench](https://github.com/wjyoumans/silex-bench) is this
   correctness-gated cross-implementation benchmark harness. Its comparisons
   supplement rather than replace Silex's native tests.
-- [Silex Devtools](https://github.com/wjyoumans/silex-devtools) provides the
-  maintained Codex workflows used to implement, measure, review, and release
-  Silex changes.
+
+Bench owns its [comparative benchmarking guide](docs/comparative-benchmarking.md).
+Automated work follows [AGENTS.md](AGENTS.md).
 
 ## Install
 
-Silex Bench 0.1.0 supports Linux and Python 3.11 or newer. The process
+Silex Bench supports Linux and Python 3.11 or newer. The process
 supervision and CPU-affinity implementation uses Linux interfaces.
 
 Clone the public repository and install the command and plotting support with:
@@ -54,8 +54,8 @@ install it, run from the checkout and replace each invocation with:
 PYTHONPATH=src python3 -m silex_bench ...
 ```
 
-The `plot` extra is optional. Without it, Markdown and CSV tables are still
-generated, but PNG, SVG, and PDF plots are skipped.
+The `plot` extra is optional. Without it, Markdown, JSON, and CSV artifacts are
+still generated, but SVG plots are skipped.
 
 ## Run a comparison
 
@@ -103,7 +103,11 @@ how far it runs:
 - `quick`: small inputs and one observation for a fast development check;
 - `dev`: broader low-degree inputs and three repetitions;
 - `scale`: curated large inputs, five repetitions, and a long budget;
-- `publication`: nine repetitions with strict provenance and execution gates.
+- `publication`: three repetitions over the broadest predeclared corpus slice,
+  with strict provenance and execution gates. Hecke S-unit rows are excluded
+  by policy from this profile with a default 60-second observation ceiling.
+  The [publication policy record](docs/publication-policy.md) details the
+  changed selection, overrides, rationale, and open methodology questions.
 
 Narrow a run with repeatable workload, case, backend, or tag options, or use
 numeric metric bounds. Each `--tag` is required in addition to the profile's
@@ -120,8 +124,7 @@ silex-bench run --profile dev \
 ```
 
 For a comparison pair other than the suite default, make the correctness gate
-explicit. The order is candidate then baseline, and speedup is always
-`baseline_time / candidate_time`:
+explicit. The order is candidate then baseline:
 
 ```sh
 silex-bench run --profile quick \
@@ -160,8 +163,10 @@ Each run contains a transactional `run.sqlite` source-of-truth ledger, a
 readable `manifest.json` mirror, and content-addressed exports under
 `exports/HASH/`. Reports retain unavailable
 implementations, unsupported cells, failures, timeouts, invalid results, and
-disagreements; timing and speedup tables include only validated, agreeing
-pairs.
+disagreements. Timing tables include only validated, agreeing pairs. Raw timing
+samples and correctness records remain available in JSON and CSV. When plotting
+support is installed, each workload gets absolute-runtime SVG plots by degree
+and by `log10(abs(D_K))` whenever those metrics are present.
 
 Automation can request one JSON document instead of terminal tables:
 
@@ -189,14 +194,28 @@ details.
 
 Each observation is validated against its workload contract before any
 pairwise comparison. Canonical mathematical results, not formatted output, are
-compared. Failed validation or disagreement is never admitted to a speed ratio.
-Every measured observation starts a fresh backend process, and the comparable
-clock is the supervisor's marked target interval or the declared whole-process
-interval for integrated S-unit work.
+compared. Failed validation or disagreement is never admitted to timing
+summaries. Every measured observation starts a fresh backend process. Ordinary
+adapters normally record one `standard` timing sample. When a profile sets
+`jit_repetitions = 1`, ordinary Hecke workloads—the only currently JIT-compiled
+adapter path—record separate `first_call` and `repeat_call` samples in one Julia
+process. The two calls use independently prepared objects and prevent
+cross-sample mathematical-cache reuse, so the repeat timing is not made
+artificially cheap by the first call. Reports keep these as distinct series.
+
+For class and unit groups, field and maximal-order construction happens before
+the timer. The measured interval contains only the requested class-group and
+unit-group computation; result extraction and correctness comparison happen
+afterward. Other ordinary workloads likewise use their declared internal target
+interval, with the marked protocol auditing the boundary and enforcing the
+deadline. Integrated S-unit work retains its separately labeled, single-sample
+whole-process scope; the ordinary Hecke JIT-pair policy does not apply there.
 
 Publication bundles additionally require a clean source checkout, explicit
-CPU affinity, one engine thread, complete identities, at least nine paired
-repetitions, and a fully agreeing run:
+CPU affinity, one engine thread, complete identities, at least three paired
+repetitions, and agreement for every configured required pair. An optional
+timing series that appears in a publication candidate must cover every planned
+repetition; an entirely unavailable optional adapter remains non-blocking:
 
 ```sh
 PYTHONPATH=src python3 -m silex_bench run --profile publication --cpu 2

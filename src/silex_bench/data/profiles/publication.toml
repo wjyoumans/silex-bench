@@ -3,11 +3,16 @@ id = "publication"
 description = "Strict publication candidate; pass --cpu and use clean pinned sources."
 include_tags = ["publication"]
 exclude_tags = []
-repetitions = 9
-warmups = 1
-timeout_seconds = 7200
+repetitions = 3
+jit_repetitions = 1
+timeout_seconds = 60
 budget_seconds = 259200
 threads = 1
 publication = true
-minimum_repetitions = 9
+minimum_repetitions = 3
 require_clean_sources = true
+
+[[backend_exclusions]]
+backend = "hecke"
+workload = "sunit_proven"
+reason = "Policy exclusion from the 60-second publication profile."

@@ -18,7 +18,8 @@ from pathlib import Path
 from typing import Any, Protocol
 
 
-CAMPAIGN_SCHEMA_VERSION = 1
+CONFIG_SCHEMA_VERSION = 1
+CAMPAIGN_SCHEMA_VERSION = 2
 JsonValue = None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
 
 
@@ -118,6 +119,44 @@ class AgreementResult:
 
 
 @dataclasses.dataclass(frozen=True)
+class TimingSample:
+    """One independently reportable timing within an observation process."""
+
+    case_key: str
+    workload: str
+    backend: str
+    repetition: int
+    variant: str
+    sample_index: int
+    status: ObservationStatus
+    timeout: bool
+    target_wall_ns: int | None
+    target_cpu_ns: int | None
+    process_wall_ns: int | None
+    timing_scope: str
+    effective_timeout_seconds: float
+    timeout_source: str
+    wall_clock: str | None
+    cpu_clock: str | None
+    internal_timing: dict[str, Any]
+    diagnostics: dict[str, Any] = dataclasses.field(default_factory=dict)
+
+    @property
+    def timing_eligible(self) -> bool:
+        return (
+            self.status is ObservationStatus.OK
+            and not self.timeout
+            and self.target_wall_ns is not None
+            and self.target_wall_ns > 0
+        )
+
+    def to_json(self) -> dict[str, Any]:
+        payload = dataclasses.asdict(self)
+        payload["status"] = self.status.value
+        return payload
+
+
+@dataclasses.dataclass(frozen=True)
 class Observation:
     case_key: str
     workload: str
@@ -138,6 +177,7 @@ class Observation:
     stdout: str
     stderr: str
     error: str | None = None
+    timing_samples: tuple[TimingSample, ...] = ()
 
     @property
     def correctness_eligible(self) -> bool:
@@ -154,6 +194,10 @@ class Observation:
 
     def to_json(self) -> dict[str, Any]:
         payload = dataclasses.asdict(self)
+        # Timing rows are normalized into their own ledger table.  Keeping
+        # them out of the parent JSON makes the parent the sole source for
+        # correctness, command, and engine identity.
+        payload.pop("timing_samples", None)
         payload["status"] = self.status.value
         payload["validation"] = self.validation.to_json()
         payload["command"] = list(self.command)
@@ -171,6 +215,8 @@ class InvocationContext:
     cpu: int | None
     environment: Mapping[str, str]
     selected_workloads: tuple[str, ...] = ()
+    jit_repetitions: int = 0
+    timeout_source: str = "campaign_ceiling"
 
 
 class ImplementationAdapter(Protocol):
@@ -425,16 +471,25 @@ def _manifest_pairs(
     return value
 
 
-def _validate_execution(value: Any, *, profile: str, mode: str) -> dict[str, Any]:
+def _validate_execution(
+    value: Any, *, profile: str, mode: str, schema_version: int
+) -> dict[str, Any]:
     execution = _manifest_object(value, "campaign manifest.plan.execution")
     if _manifest_text(
         execution.get("profile"), "campaign manifest.plan.execution.profile"
     ) != profile:
         raise ValueError("campaign manifest plan execution profile does not match plan.profile")
-    for key in ("include_tags", "required_tags", "exclude_tags", "case_ids"):
+    for key in ("include_tags", "exclude_tags", "case_ids"):
         _manifest_strings(
             execution.get(key),
             f"campaign manifest.plan.execution.{key}",
+            allow_empty=True,
+        )
+    required_tags = execution.get("required_tags")
+    if not (schema_version == 1 and required_tags is None):
+        _manifest_strings(
+            required_tags,
+            "campaign manifest.plan.execution.required_tags",
             allow_empty=True,
         )
     repetitions = _manifest_int(
@@ -442,11 +497,51 @@ def _validate_execution(value: Any, *, profile: str, mode: str) -> dict[str, Any
         "campaign manifest.plan.execution.repetitions",
         minimum=1,
     )
-    warmups = _manifest_int(
-        execution.get("warmups"), "campaign manifest.plan.execution.warmups"
-    )
-    if warmups > 1:
-        raise ValueError("campaign manifest.plan.execution.warmups must be zero or one")
+    if schema_version == 1:
+        jit_repetitions = _manifest_int(
+            execution.get("warmups"),
+            "campaign manifest.plan.execution.warmups",
+        )
+        if jit_repetitions > 1:
+            raise ValueError(
+                "campaign manifest.plan.execution.warmups must be zero or one"
+            )
+    else:
+        jit_repetitions = _manifest_int(
+            execution.get("jit_repetitions"),
+            "campaign manifest.plan.execution.jit_repetitions",
+        )
+        if jit_repetitions > 1:
+            raise ValueError(
+                "campaign manifest.plan.execution.jit_repetitions must be zero or one"
+            )
+        exclusions = execution.get("backend_exclusions")
+        if not isinstance(exclusions, list):
+            raise ValueError(
+                "campaign manifest.plan.execution.backend_exclusions must be an array"
+            )
+        seen_exclusions: set[tuple[str, str]] = set()
+        for index, exclusion_value in enumerate(exclusions):
+            label = (
+                "campaign manifest.plan.execution.backend_exclusions"
+                f"[{index}]"
+            )
+            exclusion = _manifest_object(exclusion_value, label)
+            if set(exclusion) != {"backend", "workload", "reason"}:
+                raise ValueError(
+                    f"{label} must contain exactly backend, workload, and reason"
+                )
+            backend = _manifest_text(exclusion.get("backend"), f"{label}.backend")
+            workload = _manifest_text(
+                exclusion.get("workload"), f"{label}.workload"
+            )
+            _manifest_text(exclusion.get("reason"), f"{label}.reason")
+            cell = (backend, workload)
+            if cell in seen_exclusions:
+                raise ValueError(
+                    "campaign manifest backend exclusions must not contain duplicates"
+                )
+            seen_exclusions.add(cell)
     _manifest_number(
         execution.get("timeout_seconds"),
         "campaign manifest.plan.execution.timeout_seconds",
@@ -474,14 +569,27 @@ def _validate_execution(value: Any, *, profile: str, mode: str) -> dict[str, Any
     for key in ("publication", "require_clean_sources", "require_all_adapters"):
         if type(execution.get(key)) is not bool:
             raise ValueError(f"campaign manifest.plan.execution.{key} must be a boolean")
-    if execution["publication"] and (
-        repetitions < minimum_repetitions or minimum_repetitions < 9
+    if (
+        schema_version == CAMPAIGN_SCHEMA_VERSION
+        and execution["publication"]
+        and not execution["require_clean_sources"]
     ):
         raise ValueError(
-            "campaign manifest publication execution requires at least nine repetitions"
+            "campaign manifest publication execution requires clean-source enforcement"
+        )
+    publication_floor = 9 if schema_version == 1 else 3
+    if execution["publication"] and (
+        repetitions < minimum_repetitions
+        or minimum_repetitions < publication_floor
+    ):
+        raise ValueError(
+            "campaign manifest publication execution requires at least "
+            f"{publication_floor} repetitions"
         )
     if mode == "correctness" and (
-        repetitions != 1 or warmups != 0 or execution["publication"]
+        repetitions != 1
+        or jit_repetitions != 0
+        or execution["publication"]
     ):
         raise ValueError(
             "campaign manifest correctness execution must use one cold, non-publication repetition"
@@ -550,7 +658,7 @@ def _validate_overrides(
         raise ValueError("campaign manifest workload override does not match planned workloads")
     if override_backends and override_backends != backends:
         raise ValueError("campaign manifest backend override does not match planned backends")
-    if case_ids != execution["case_ids"] or tags != execution["required_tags"]:
+    if case_ids != execution["case_ids"] or tags != execution.get("required_tags", []):
         raise ValueError("campaign manifest selection overrides do not match plan execution")
     override_pairs = _manifest_pairs(
         overrides.get("required_pairs"),
@@ -648,24 +756,38 @@ def campaign_manifest_fingerprint(value: Mapping[str, Any]) -> str:
 
 
 def validate_campaign_manifest(value: Any) -> dict[str, Any]:
-    """Return a campaign manifest after enforcing the complete schema-v1 boundary."""
+    """Validate current manifests and frozen report-only schema-v1 manifests."""
 
     manifest = _manifest_object(value, "campaign manifest")
     version = manifest.get("schema_version")
-    if type(version) is not int or version != CAMPAIGN_SCHEMA_VERSION:
+    if type(version) is not int or version not in {1, CAMPAIGN_SCHEMA_VERSION}:
         raise ValueError(
-            "campaign manifest schema_version must be "
+            "campaign manifest schema_version must be 1 or "
             f"{CAMPAIGN_SCHEMA_VERSION}"
         )
 
     plan = _manifest_object(manifest.get("plan"), "campaign manifest.plan")
-    if plan.get("schema_version") != CAMPAIGN_SCHEMA_VERSION or type(
+    if plan.get("schema_version") != version or type(
         plan.get("schema_version")
     ) is not int:
         raise ValueError(
-            f"campaign manifest.plan.schema_version must be {CAMPAIGN_SCHEMA_VERSION}"
+            f"campaign manifest.plan.schema_version must be {version}"
         )
-    for key in ("invocation_root", "suite", "suite_path", "suite_sha256", "profile", "profile_path", "profile_sha256"):
+    invocation_root = plan.get("invocation_root")
+    if not (version == 1 and invocation_root is None):
+        _manifest_text(
+            invocation_root,
+            "campaign manifest.plan.invocation_root",
+            allow_empty=version == 1,
+        )
+    for key in (
+        "suite",
+        "suite_path",
+        "suite_sha256",
+        "profile",
+        "profile_path",
+        "profile_sha256",
+    ):
         _manifest_text(plan.get(key), f"campaign manifest.plan.{key}")
     tools_path = plan.get("tools_path")
     tools_sha256 = plan.get("tools_sha256")
@@ -682,13 +804,17 @@ def validate_campaign_manifest(value: Any) -> dict[str, Any]:
     backends = _manifest_strings(plan.get("backends"), "campaign manifest.plan.backends")
     backend_set = set(backends)
     raw_capabilities = plan.get("adapter_capabilities")
-    if not isinstance(raw_capabilities, list) or len(raw_capabilities) != len(backends):
+    early_schema_v1 = version == 1 and raw_capabilities is None
+    if not early_schema_v1 and (
+        not isinstance(raw_capabilities, list)
+        or len(raw_capabilities) != len(backends)
+    ):
         raise ValueError(
             "campaign manifest.plan.adapter_capabilities must match planned backends"
         )
     adapter_capabilities: list[dict[str, Any]] = []
     for index, (backend, raw_capability) in enumerate(
-        zip(backends, raw_capabilities)
+        zip(backends, raw_capabilities or [])
     ):
         label = f"campaign manifest.plan.adapter_capabilities[{index}]"
         capability = _manifest_object(raw_capability, label)
@@ -710,7 +836,22 @@ def validate_campaign_manifest(value: Any) -> dict[str, Any]:
     mode = plan.get("mode")
     if mode not in {"correctness", "performance"}:
         raise ValueError("campaign manifest.plan.mode must be correctness or performance")
-    execution = _validate_execution(plan.get("execution"), profile=plan["profile"], mode=mode)
+    execution = _validate_execution(
+        plan.get("execution"),
+        profile=plan["profile"],
+        mode=mode,
+        schema_version=version,
+    )
+    if version == CAMPAIGN_SCHEMA_VERSION:
+        for exclusion in execution["backend_exclusions"]:
+            if exclusion["backend"] not in backend_set:
+                raise ValueError(
+                    "campaign manifest backend exclusion references an unplanned backend"
+                )
+            if exclusion["workload"] not in workloads:
+                raise ValueError(
+                    "campaign manifest backend exclusion references an unplanned workload"
+                )
     overrides = _validate_overrides(
         plan.get("overrides"),
         workloads=workloads,
@@ -734,14 +875,28 @@ def validate_campaign_manifest(value: Any) -> dict[str, Any]:
     )
     if case_count != len(cases):
         raise ValueError("campaign manifest plan case_count does not match plan.cases")
-    expected_samples = int(execution["repetitions"]) * sum(
-        sum(
-            backend == "silex" or backend in set(case["eligible_backends"])
-            for backend in backends
+    exclusions = {
+        (item["backend"], item["workload"])
+        for item in execution.get("backend_exclusions", [])
+    }
+    selected_counts: dict[str, int] = {}
+    for key, case in cases.items():
+        eligible = set(case["eligible_backends"])
+        selected = (
+            [
+                backend
+                for backend in backends
+                if backend == "silex" or backend in eligible
+            ]
+            if eligible
+            else list(backends)
         )
-        if case["eligible_backends"]
-        else len(backends)
-        for case in cases.values()
+        selected_counts[key] = sum(
+            (backend, case["workload"]) not in exclusions
+            for backend in selected
+        )
+    expected_samples = int(execution["repetitions"]) * sum(
+        selected_counts.values()
     )
     sample_count = _manifest_int(
         plan.get("sample_count"), "campaign manifest.plan.sample_count"
@@ -754,7 +909,22 @@ def validate_campaign_manifest(value: Any) -> dict[str, Any]:
         plan.get("nominal_timeout_product_seconds"),
         "campaign manifest.plan.nominal_timeout_product_seconds",
     )
-    expected_nominal = sample_count * float(execution["timeout_seconds"])
+    if version == 1:
+        expected_nominal = sample_count * float(execution["timeout_seconds"])
+    else:
+        ceiling = float(execution["timeout_seconds"])
+        expected_nominal = int(execution["repetitions"]) * sum(
+            selected_counts[key]
+            * min(
+                ceiling,
+                float(case["input"].get("timeout_seconds")),
+            )
+            if isinstance(case["input"].get("timeout_seconds"), (int, float))
+            and not isinstance(case["input"].get("timeout_seconds"), bool)
+            and float(case["input"]["timeout_seconds"]) > 0
+            else selected_counts[key] * ceiling
+            for key, case in cases.items()
+        )
     if nominal != expected_nominal:
         raise ValueError(
             "campaign manifest nominal timeout product does not match sample_count and timeout"
@@ -767,7 +937,7 @@ def validate_campaign_manifest(value: Any) -> dict[str, Any]:
     expected_plan_fingerprint = hashlib.sha256(
         canonical_json(
             {
-                "schema_version": CAMPAIGN_SCHEMA_VERSION,
+                "schema_version": version,
                 "suite_sha256": plan["suite_sha256"],
                 "profile_sha256": plan["profile_sha256"],
                 "tools_sha256": tools_sha256,
@@ -781,7 +951,7 @@ def validate_campaign_manifest(value: Any) -> dict[str, Any]:
             }
         ).encode()
     ).hexdigest()
-    if plan_fingerprint != expected_plan_fingerprint:
+    if not early_schema_v1 and plan_fingerprint != expected_plan_fingerprint:
         raise ValueError("campaign manifest plan_fingerprint does not match the resolved plan")
 
     probes = manifest.get("engine_probes")
@@ -814,22 +984,23 @@ def validate_campaign_manifest(value: Any) -> dict[str, Any]:
     bench_source = _validate_source_identity(
         sources.get("silex_bench"), "campaign manifest.sources.silex_bench"
     )
-    if bench_source.get("provenance") not in {
-        "source_checkout",
-        "installed_distribution",
-    }:
-        raise ValueError(
-            "campaign manifest.sources.silex_bench.provenance must identify source or installed bytes"
+    if not early_schema_v1:
+        if bench_source.get("provenance") not in {
+            "source_checkout",
+            "installed_distribution",
+        }:
+            raise ValueError(
+                "campaign manifest.sources.silex_bench.provenance must identify source or installed bytes"
+            )
+        _manifest_text(
+            bench_source.get("package_version"),
+            "campaign manifest.sources.silex_bench.package_version",
         )
-    _manifest_text(
-        bench_source.get("package_version"),
-        "campaign manifest.sources.silex_bench.package_version",
-    )
-    _manifest_digest(
-        bench_source.get("package_sha256"),
-        "campaign manifest.sources.silex_bench.package_sha256",
-        optional=True,
-    )
+        _manifest_digest(
+            bench_source.get("package_sha256"),
+            "campaign manifest.sources.silex_bench.package_sha256",
+            optional=True,
+        )
     _validate_source_identity(sources.get("silex"), "campaign manifest.sources.silex")
 
     machine = _manifest_object(manifest.get("machine"), "campaign manifest.machine")
@@ -855,12 +1026,23 @@ def validate_campaign_manifest(value: Any) -> dict[str, Any]:
         raise ValueError("campaign manifest requested CPU does not match plan execution")
 
     timing = _manifest_object(manifest.get("timing"), "campaign manifest.timing")
-    expected_timing = {
-        "primary_clock": "target_wall_ns",
-        "scope": "workload contract: supervisor_marked_target or whole_process",
-        "ratio_definition": "baseline_over_candidate",
-        "performance_execution": "serial_paired_blocks",
-    }
+    expected_timing = (
+        {
+            "primary_clock": "target_wall_ns",
+            "scope": "workload contract: supervisor_marked_target or whole_process",
+            "ratio_definition": "baseline_over_candidate",
+            "performance_execution": "serial_paired_blocks",
+        }
+        if version == 1
+        else {
+            "primary_clock": "timing_samples.target_wall_ns",
+            "clock_policy": "backend_internal_target_wall",
+            "scope": "sample-local intended operation; supervisor markers audit boundaries",
+            "deadline_policy": "min(campaign_ceiling, case_timeout_hint)",
+            "jit_policy": "Hecke first_call/repeat_call on fresh uncached inputs",
+            "performance_execution": "serial_paired_blocks",
+        }
+    )
     for key, expected in expected_timing.items():
         if timing.get(key) != expected:
             raise ValueError(f"campaign manifest.timing.{key} must be {expected}")

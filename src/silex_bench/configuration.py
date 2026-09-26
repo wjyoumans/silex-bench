@@ -11,9 +11,7 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from .contracts import CAMPAIGN_SCHEMA_VERSION
-
-
+CONFIG_SCHEMA_VERSION = 1
 MAX_CONFIG_BYTES = 1 << 20
 _SUITE_KEYS = {
     "schema_version",
@@ -31,8 +29,9 @@ _PROFILE_KEYS = {
     "description",
     "include_tags",
     "exclude_tags",
+    "backend_exclusions",
     "repetitions",
-    "warmups",
+    "jit_repetitions",
     "timeout_seconds",
     "budget_seconds",
     "cpu",
@@ -54,7 +53,7 @@ _TOOLS_KEYS = {
     "hecke_project",
     "magma",
 }
-_REPORT_KEYS = {"primary_clock", "speedup"}
+_REPORT_KEYS = {"primary_clock"}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -71,6 +70,20 @@ class SuiteConfig:
 
 
 @dataclasses.dataclass(frozen=True)
+class BackendExclusion:
+    backend: str
+    workload: str
+    reason: str
+
+    def to_json(self) -> dict[str, str]:
+        return {
+            "backend": self.backend,
+            "workload": self.workload,
+            "reason": self.reason,
+        }
+
+
+@dataclasses.dataclass(frozen=True)
 class ProfileConfig:
     path: Path
     id: str
@@ -78,7 +91,7 @@ class ProfileConfig:
     include_tags: tuple[str, ...]
     exclude_tags: tuple[str, ...]
     repetitions: int
-    warmups: int
+    jit_repetitions: int
     timeout_seconds: float
     budget_seconds: float | None
     cpu: int | None
@@ -88,6 +101,7 @@ class ProfileConfig:
     require_clean_sources: bool
     metrics: dict[str, tuple[float | None, float | None]]
     sha256: str
+    backend_exclusions: tuple[BackendExclusion, ...] = ()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -209,10 +223,10 @@ def _exact_keys(payload: dict[str, Any], allowed: set[str], label: str) -> None:
 def _schema(payload: dict[str, Any], label: str) -> None:
     if (
         type(payload.get("schema_version")) is not int
-        or payload["schema_version"] != CAMPAIGN_SCHEMA_VERSION
+        or payload["schema_version"] != CONFIG_SCHEMA_VERSION
     ):
         raise ValueError(
-            f"{label} schema_version must be {CAMPAIGN_SCHEMA_VERSION}"
+            f"{label} schema_version must be {CONFIG_SCHEMA_VERSION}"
         )
 
 
@@ -292,8 +306,6 @@ def load_suite(path: Path) -> SuiteConfig:
     _exact_keys(reports, _REPORT_KEYS, "suite report")
     if reports.get("primary_clock", "target_wall_ns") != "target_wall_ns":
         raise ValueError("suite.reports.primary_clock must be target_wall_ns")
-    if reports.get("speedup", "baseline_over_candidate") != "baseline_over_candidate":
-        raise ValueError("suite.reports.speedup must be baseline_over_candidate")
     return SuiteConfig(
         path=path.expanduser().absolute(),
         id=identifier,
@@ -317,12 +329,38 @@ def load_profile(path: Path) -> ProfileConfig:
         raise ValueError("profile.description must be text")
     include_tags = _strings(payload.get("include_tags", []), "profile.include_tags", allow_empty=True)
     exclude_tags = _strings(payload.get("exclude_tags", []), "profile.exclude_tags", allow_empty=True)
+    exclusions_raw = payload.get("backend_exclusions", [])
+    if not isinstance(exclusions_raw, list):
+        raise ValueError("profile.backend_exclusions must be an array of tables")
+    backend_exclusions: list[BackendExclusion] = []
+    exclusion_cells: set[tuple[str, str]] = set()
+    for index, value in enumerate(exclusions_raw):
+        label = f"profile.backend_exclusions[{index}]"
+        if not isinstance(value, dict):
+            raise ValueError(f"{label} must be a table")
+        _exact_keys(value, {"backend", "workload", "reason"}, label)
+        exclusion = BackendExclusion(
+            backend=_identifier(value.get("backend"), f"{label}.backend"),
+            workload=_identifier(value.get("workload"), f"{label}.workload"),
+            reason=_identifier(value.get("reason"), f"{label}.reason"),
+        )
+        cell = (exclusion.backend, exclusion.workload)
+        if cell in exclusion_cells:
+            raise ValueError(
+                "profile.backend_exclusions must not contain duplicate backend/workload cells"
+            )
+        exclusion_cells.add(cell)
+        backend_exclusions.append(exclusion)
     repetitions = _nonnegative_int(payload.get("repetitions", 1), "profile.repetitions")
     if repetitions == 0:
         raise ValueError("profile.repetitions must be positive")
-    warmups = _nonnegative_int(payload.get("warmups", 0), "profile.warmups")
-    if warmups > 1:
-        raise ValueError("profile.warmups currently supports only zero or one")
+    jit_repetitions = _nonnegative_int(
+        payload.get("jit_repetitions", 0), "profile.jit_repetitions"
+    )
+    if jit_repetitions > 1:
+        raise ValueError(
+            "profile.jit_repetitions currently supports only zero or one"
+        )
     timeout = _positive_number(payload.get("timeout_seconds", 60), "profile.timeout_seconds")
     budget_raw = payload.get("budget_seconds")
     budget = None if budget_raw is None else _positive_number(budget_raw, "profile.budget_seconds")
@@ -335,12 +373,14 @@ def load_profile(path: Path) -> ProfileConfig:
     clean = payload.get("require_clean_sources", publication)
     if type(publication) is not bool or type(clean) is not bool:
         raise ValueError("profile publication flags must be booleans")
+    if publication and not clean:
+        raise ValueError("publication profiles require clean-source enforcement")
     minimum = _nonnegative_int(
-        payload.get("minimum_repetitions", 9 if publication else 1),
+        payload.get("minimum_repetitions", 3 if publication else 1),
         "profile.minimum_repetitions",
     )
-    if publication and (repetitions < minimum or minimum < 9):
-        raise ValueError("publication profiles require at least nine repetitions")
+    if publication and (repetitions < minimum or minimum < 3):
+        raise ValueError("publication profiles require at least three repetitions")
     metrics_raw = payload.get("metrics", {})
     if not isinstance(metrics_raw, dict):
         raise ValueError("profile.metrics must be a table")
@@ -372,8 +412,9 @@ def load_profile(path: Path) -> ProfileConfig:
         description=description,
         include_tags=include_tags,
         exclude_tags=exclude_tags,
+        backend_exclusions=tuple(backend_exclusions),
         repetitions=repetitions,
-        warmups=warmups,
+        jit_repetitions=jit_repetitions,
         timeout_seconds=timeout,
         budget_seconds=budget,
         cpu=cpu,
@@ -412,17 +453,26 @@ def effective_execution(profile: ProfileConfig, overrides: RunOverrides) -> dict
     for name, bounds in metrics.items():
         if bounds[0] is not None and bounds[1] is not None and bounds[0] > bounds[1]:
             raise ValueError(f"effective metric {name} has min greater than max")
+    repetitions = (
+        profile.repetitions
+        if overrides.repetitions is None
+        else overrides.repetitions
+    )
+    if profile.publication and repetitions < profile.minimum_repetitions:
+        raise ValueError(
+            "publication execution requires at least "
+            f"{profile.minimum_repetitions} repetitions"
+        )
     return {
         "profile": profile.id,
         "include_tags": list(profile.include_tags),
         "required_tags": list(overrides.tags),
         "exclude_tags": list(profile.exclude_tags),
-        "repetitions": (
-            profile.repetitions
-            if overrides.repetitions is None
-            else overrides.repetitions
-        ),
-        "warmups": profile.warmups,
+        "backend_exclusions": [
+            exclusion.to_json() for exclusion in profile.backend_exclusions
+        ],
+        "repetitions": repetitions,
+        "jit_repetitions": profile.jit_repetitions,
         "timeout_seconds": (
             profile.timeout_seconds
             if overrides.timeout_seconds is None

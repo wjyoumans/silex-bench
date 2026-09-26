@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 
 from silex_bench.presentation import (
     render_campaign,
     render_doctor,
     render_list,
     render_plan,
+    render_progress,
     table,
 )
 
@@ -81,6 +83,13 @@ class PresentationTests(unittest.TestCase):
                     "budget_seconds": 60,
                     "cpu": None,
                     "require_all_adapters": True,
+                    "backend_exclusions": [
+                        {
+                            "backend": "hecke",
+                            "workload": "sunit_proven",
+                            "reason": "bounded campaign policy",
+                        }
+                    ],
                 },
             }
         )
@@ -91,6 +100,9 @@ class PresentationTests(unittest.TestCase):
         self.assertIn("degree=2", plan)
         self.assertIn("Adapter cells", plan)
         self.assertIn("unsupported", plan)
+        self.assertIn("Observation timeout ceiling", plan)
+        self.assertIn("Profile backend exclusions", plan)
+        self.assertIn("bounded campaign policy", plan)
         doctor = render_doctor(
             {
                 "engines": [
@@ -110,7 +122,7 @@ class PresentationTests(unittest.TestCase):
         self.assertIn("Required comparisons: PASS", doctor)
         self.assertIn("Optional adapter issues", doctor)
 
-    def test_campaign_renders_correctness_speedup_and_artifacts(self) -> None:
+    def test_campaign_renders_correctness_and_artifacts_without_speedups(self) -> None:
         text = render_campaign(
             {
                 "state": "complete",
@@ -137,9 +149,50 @@ class PresentationTests(unittest.TestCase):
             }
         )
         self.assertIn("Campaign state: complete", text)
-        self.assertIn("2.000x", text)
+        self.assertNotIn("speedup", text.lower())
+        self.assertNotIn("2.000x", text)
         self.assertIn("/tmp/report.md", text)
         self.assertIn("Plots not generated", text)
+
+    def test_progress_line_retains_each_recorded_timing_variant(self) -> None:
+        observation = SimpleNamespace(
+            case_key="class_unit_proven:quartic",
+            backend="hecke",
+            repetition=1,
+            status=SimpleNamespace(value="ok"),
+            timing_samples=(
+                SimpleNamespace(
+                    variant="first_call",
+                    status=SimpleNamespace(value="ok"),
+                    target_wall_ns=1_250_000_000,
+                ),
+                SimpleNamespace(
+                    variant="repeat_call",
+                    status=SimpleNamespace(value="ok"),
+                    target_wall_ns=850_000_000,
+                ),
+            ),
+        )
+
+        self.assertEqual(
+            render_progress(observation, 2, 7),
+            "[2/7] class_unit_proven:quartic/hecke rep=2: ok; "
+            "first_call=1.250 s, repeat_call=850.000 ms",
+        )
+
+    def test_progress_line_uses_legacy_observation_clock_as_standard_sample(self) -> None:
+        observation = SimpleNamespace(
+            case_key="maximal_order:quadratic",
+            backend="pari",
+            repetition=0,
+            status=SimpleNamespace(value="ok"),
+            target_wall_ns=875_000,
+        )
+
+        self.assertEqual(
+            render_progress(observation, 1, 1),
+            "[1/1] maximal_order:quadratic/pari rep=1: ok; standard=875.000 us",
+        )
 
 
 if __name__ == "__main__":

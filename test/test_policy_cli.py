@@ -35,11 +35,14 @@ class SyntheticImplementation:
     discriminant: str = "5"
     validation_success: bool = True
     identity_version: str = "test"
+    trust_result: bool = False
     workload: str = MAXIMAL_ORDER
 
     def run(self, case, *, repetition, order_index, warmup, context, contract):
         result = {"maximal_order_discriminant": self.discriminant}
-        if self.validation_success:
+        if self.trust_result:
+            validation = ValidationResult(True, (), {"synthetic_valid": True})
+        elif self.validation_success:
             validation = contract.validate_observation(case, self.backend, result, {})
         else:
             validation = ValidationResult(
@@ -66,7 +69,14 @@ class SyntheticImplementation:
             validation=validation,
             target_wall_ns=elapsed,
             process_wall_ns=elapsed + 1_000,
-            internal_timing={},
+            internal_timing={
+                "scope": "maximal_order_only",
+                "wall_clock": {
+                    "silex": "steady_clock",
+                    "pari": "pari_getwalltime_ms",
+                    "hecke": "julia_time_ns_monotonic",
+                }.get(self.backend, "fixture_monotonic"),
+            },
             engine_identity={"engine": self.backend, "version": self.identity_version},
             command=(self.backend,),
             stdout="",
@@ -82,6 +92,7 @@ def synthetic_backend(
     discriminant: str = "5",
     validation_success: bool = True,
     identity_version: str = "test",
+    trust_result: bool = False,
 ) -> BackendDescriptor:
     implementations = (
         {
@@ -90,6 +101,7 @@ def synthetic_backend(
                 discriminant=discriminant,
                 validation_success=validation_success,
                 identity_version=identity_version,
+                trust_result=trust_result,
             )
         }
         if implements
@@ -146,8 +158,9 @@ class CampaignPolicyTests(unittest.TestCase):
             description="",
             include_tags=("quick",),
             exclude_tags=(),
+            backend_exclusions=(),
             repetitions=1,
-            warmups=0,
+            jit_repetitions=0,
             timeout_seconds=1,
             budget_seconds=None,
             cpu=None,
@@ -169,8 +182,7 @@ class CampaignPolicyTests(unittest.TestCase):
             "degree": 2,
             "expected_success": True,
         }
-        if expected:
-            field["maximal_order_discriminant"] = 5
+        field["maximal_order_discriminant"] = 5
         self.corpus.write_text(json.dumps({"fields": [field]}), encoding="utf-8")
 
     def _plan(
@@ -214,10 +226,8 @@ class CampaignPolicyTests(unittest.TestCase):
             (agreement["lhs_backend"], agreement["rhs_backend"]),
             ("pari", "silex"),
         )
-        self.assertAlmostEqual(
-            agreement["speedup_baseline_over_candidate"],
-            0.5,
-        )
+        self.assertTrue(agreement["success"])
+        self.assertNotIn("speedup_baseline_over_candidate", agreement)
 
     def test_require_all_adapters_promotes_declared_unavailability_to_failure(self) -> None:
         registry = synthetic_registry(
@@ -288,7 +298,7 @@ class CampaignPolicyTests(unittest.TestCase):
             {AgreementStatus.UNSUPPORTED.value},
         )
         self.assertTrue(
-            all(row["timing_eligible"] is False for row in magma_agreements)
+            all("timing_eligible" not in row for row in magma_agreements)
         )
 
     def test_agreement_rows_distinguish_practical_statuses(self) -> None:
@@ -296,7 +306,7 @@ class CampaignPolicyTests(unittest.TestCase):
         registry = synthetic_registry(
             synthetic_backend("silex"),
             synthetic_backend("pari"),
-            synthetic_backend("hecke", discriminant="7"),
+            synthetic_backend("hecke", discriminant="7", trust_result=True),
             synthetic_backend("invalid", validation_success=False),
             synthetic_backend("offline", available=False),
             synthetic_backend("unsupported", implements=False),

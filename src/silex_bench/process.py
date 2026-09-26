@@ -828,6 +828,10 @@ def _stop_process(
     return process.returncode, b"", b""
 
 
+class _ObservationDeadlineExpired(TimeoutError):
+    """An observation deadline expired before supervisor cleanup began."""
+
+
 def _supervised_popen(
     pinned: dict[str, Any],
     *,
@@ -836,6 +840,7 @@ def _supervised_popen(
     stdin: Any,
     cpu: int | None,
     bufsize: int = -1,
+    deadline: float | None = None,
 ) -> tuple[subprocess.Popen[bytes], int]:
     control_read, control_write = os.pipe2(
         getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0)
@@ -873,14 +878,28 @@ def _supervised_popen(
         control_write = -1
 
         response = bytearray()
-        deadline = time.monotonic() + _SUPERVISOR_HANDSHAKE_SECONDS
+        handshake_deadline = time.monotonic() + _SUPERVISOR_HANDSHAKE_SECONDS
+        if deadline is not None:
+            handshake_deadline = min(handshake_deadline, deadline)
+
+        def handshake_timeout() -> OSError:
+            # The handshake has its own launch limit. Only expiration of the
+            # observation cutoff is a benchmark timeout; cleanup cannot change
+            # either classification after this exception has been created.
+            error_type = (
+                _ObservationDeadlineExpired
+                if deadline is not None and handshake_deadline == deadline
+                else OSError
+            )
+            return error_type("process supervisor handshake timed out")
+
         while b"\n" not in response:
-            remaining = deadline - time.monotonic()
+            remaining = handshake_deadline - time.monotonic()
             if remaining <= 0:
-                raise OSError("process supervisor handshake timed out")
+                raise handshake_timeout()
             readable, _, _ = select.select([control_read], [], [], remaining)
             if control_read not in readable:
-                raise OSError("process supervisor handshake timed out")
+                raise handshake_timeout()
             chunk = os.read(
                 control_read,
                 _SUPERVISOR_CONTROL_BYTES + 1 - len(response),
@@ -961,6 +980,7 @@ def run_process(
         "immutable_inputs": pinned["immutable_inputs"],
     }
     start = time.perf_counter_ns()
+    deadline = time.monotonic() + timeout
     process: subprocess.Popen[bytes] | None = None
     try:
         try:
@@ -970,14 +990,18 @@ def run_process(
                 env=env,
                 stdin=subprocess.PIPE if stdin is not None else None,
                 cpu=cpu,
+                deadline=deadline,
             )
         finally:
             for descriptor in pinned["descriptors"]:
                 os.close(descriptor)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(cmd, timeout)
         stdout, stderr, capture_error = _bounded_communicate(
             process,
             input_bytes,
-            timeout,
+            remaining,
         )
         if capture_error is not None:
             returncode, stdout_tail, stderr_tail = _stop_process(process)
@@ -995,12 +1019,13 @@ def run_process(
                 "stderr": stderr.decode(errors="replace"),
                 "error": capture_error,
             }
-    except subprocess.TimeoutExpired:
+    except (subprocess.TimeoutExpired, _ObservationDeadlineExpired) as exc:
         if process is None:
-            raise
-        returncode, stdout_tail, stderr_tail = _stop_process(process)
+            returncode, stdout_tail, stderr_tail = None, b"", b""
+        else:
+            returncode, stdout_tail, stderr_tail = _stop_process(process)
         return {
-            "available": True,
+            "available": process is not None,
             "success": False,
             "timeout": True,
             "returncode": returncode,
@@ -1008,18 +1033,25 @@ def run_process(
             **execution_evidence,
             "stdout": stdout_tail.decode(errors="replace"),
             "stderr": stderr_tail.decode(errors="replace"),
-            "error": "process timed out",
+            "error": str(exc) if isinstance(exc, _ObservationDeadlineExpired) else "process timed out",
         }
     except (OSError, OverflowError, ValueError) as exc:
         if process is not None:
             _stop_process(process)
         return {
-            "available": False,
+            "available": process is not None,
             "success": False,
             "timeout": False,
             **execution_evidence,
             "error": str(exc),
         }
+    except BaseException:
+        # The supervisor is started in a separate session, so a Ctrl-C sent to
+        # the harness does not reach it.  Reap the full supervised process tree
+        # before allowing the campaign to checkpoint its interrupted state.
+        if process is not None:
+            _stop_process(process)
+        raise
     _close_output_pipes(process)
     return {
         "available": True,
@@ -1042,7 +1074,6 @@ def run_marked_process(
     ready_marker: str,
     target_marker: str,
     timeout: float,
-    exit_grace: float = 5.0,
     cwd: Path,
     cpu: int | None = None,
     env: dict[str, str] | None = None,
@@ -1052,9 +1083,8 @@ def run_marked_process(
 ) -> dict[str, Any]:
     if (command_error := _command_error(cmd)) is not None:
         return _command_failure(cmd, command_error)
-    for label, value in (("timeout", timeout), ("exit_grace", exit_grace)):
-        if (duration_error := _duration_error(value, label)) is not None:
-            return _command_failure(cmd, duration_error)
+    if (duration_error := _duration_error(timeout, "timeout")) is not None:
+        return _command_failure(cmd, duration_error)
     protocol_error = _protocol_error(
         ready_input, target_input, final_input, ready_marker, target_marker
     )
@@ -1215,7 +1245,11 @@ def run_marked_process(
             return False
         return True
 
-    def failure(message: str) -> dict[str, Any]:
+    def failure(message: str, *, timed_out: bool | None = None) -> dict[str, Any]:
+        # Classify at the failure boundary, before process-tree cleanup adds
+        # elapsed time. Launch exceptions carry their classification separately.
+        if timed_out is None:
+            timed_out = time.monotonic() >= deadline
         if process is None:
             returncode = None
         else:
@@ -1223,7 +1257,7 @@ def run_marked_process(
         return {
             "available": process is not None,
             "success": False,
-            "timeout": time.monotonic() >= deadline,
+            "timeout": timed_out,
             "returncode": returncode,
             "process_wall_ms":
                 (time.perf_counter_ns() - process_start) / 1_000_000,
@@ -1243,6 +1277,7 @@ def run_marked_process(
                 stdin=subprocess.PIPE,
                 cpu=cpu,
                 bufsize=0,
+                deadline=deadline,
             )
         finally:
             for descriptor in pinned["descriptors"]:
@@ -1276,9 +1311,12 @@ def run_marked_process(
                 f"CPU {cpu}: {effective_affinity}"
             )
 
-        # Preparation and target each get the configured budget. Generate the
-        # nonce only after readiness so pre-dispatch output cannot predict it.
-        deadline = time.monotonic() + timeout
+        # One non-resetting deadline covers process launch, preparation, the
+        # measured target, result extraction, and orderly shutdown.  This is
+        # the observation cutoff recorded by the campaign; resetting it at a
+        # phase boundary could let one observation consume several cutoffs.
+        # Generate the nonce only after readiness so pre-dispatch output
+        # cannot predict it.
         try:
             target_nonce = secrets.token_hex(16)
         except Exception as exc:
@@ -1313,16 +1351,23 @@ def run_marked_process(
         ):
             target_cpu_ms = (target_cpu_end - target_cpu_start) / 1_000_000
 
-        deadline = time.monotonic() + exit_grace
         if not write_input(final_input):
             return failure("marked process timed out writing final input")
         _close_stdin(process)
         if not drain_until_exit():
             return failure("marked process timed out after target marker")
     except _OutputLimitExceeded:
-        return failure("marked process output limit exceeded")
+        return failure("marked process output limit exceeded", timed_out=False)
+    except _ObservationDeadlineExpired as exc:
+        return failure(str(exc), timed_out=True)
     except (OSError, OverflowError, ValueError) as exc:
-        return failure(str(exc))
+        return failure(str(exc), timed_out=False)
+    except BaseException:
+        # In particular, Ctrl-C must not leave the supervised backend or any
+        # descendant running after the campaign records an interruption.
+        if process is not None:
+            _stop_process(process)
+        raise
 
     _close_output_pipes(process)
     return {

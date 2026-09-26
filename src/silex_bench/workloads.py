@@ -83,8 +83,14 @@ def _comparison(
 
 
 class NumberFieldContract(WorkloadContract):
-    timing_scope = "supervisor_marked_target"
-    scale_axes = ("degree", "discriminant_bits", "coefficient_bits", "height")
+    timing_scope = "backend_internal_target"
+    scale_axes = (
+        "degree",
+        "log10_abs_discriminant",
+        "discriminant_bits",
+        "coefficient_bits",
+        "height",
+    )
 
     def __init__(self, identifier: str, display_name: str) -> None:
         self.id = identifier
@@ -234,7 +240,13 @@ class SUnitContract(WorkloadContract):
     id = SUNIT
     display_name = "Proven S-class and S-unit groups"
     timing_scope = "whole_process"
-    scale_axes = ("degree", "s_size", "discriminant_bits", "coefficient_bits")
+    scale_axes = (
+        "degree",
+        "log10_abs_discriminant",
+        "s_size",
+        "discriminant_bits",
+        "coefficient_bits",
+    )
 
     @staticmethod
     def _slot(backend: str) -> str:
@@ -337,7 +349,7 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 
 def _field_tags(row: Mapping[str, Any]) -> set[str]:
-    tags = {"all", "number-field"}
+    tags = {"all", "number-field", "publication"}
     identifier = str(row.get("id", ""))
     role = row.get("benchmark_role")
     status = row.get("status")
@@ -350,20 +362,39 @@ def _field_tags(row: Mapping[str, Any]) -> set[str]:
     if row.get("expected_success") is True and isinstance(row.get("degree"), int) and row["degree"] <= 6:
         tags.add("dev")
     if role in {"core", "scale", "diversity", "holdout"}:
-        tags.update({"scale", "publication"})
+        tags.add("scale")
     return tags
 
 
-def _field_metrics(row: Mapping[str, Any]) -> dict[str, int]:
+def _exact_discriminant(row: Mapping[str, Any], label: str) -> int:
+    text = _integer_text(row.get("maximal_order_discriminant"))
+    if text is None or int(text) == 0:
+        raise ValueError(
+            f"{label} requires an exact signed nonzero maximal_order_discriminant"
+        )
+    return int(text)
+
+
+def _discriminant_metrics(discriminant: int) -> dict[str, int | float]:
+    magnitude = abs(discriminant)
+    return {
+        "maximal_order_discriminant": discriminant,
+        "discriminant_bits": magnitude.bit_length(),
+        "log10_abs_discriminant": math.log10(magnitude),
+    }
+
+
+def _field_metrics(row: Mapping[str, Any]) -> dict[str, int | float]:
     coefficients = row["coefficients_low_to_high"]
     height = max(abs(value) for value in coefficients)
-    discriminant = row.get("maximal_order_discriminant", row.get("discriminant"))
-    discriminant_value = abs(int(discriminant)) if discriminant is not None else 0
+    discriminant = _exact_discriminant(
+        row, f"number-field corpus row {row.get('id', '<unknown>')}"
+    )
     return {
         "degree": len(coefficients) - 1,
         "height": height,
         "coefficient_bits": max(1, height.bit_length()),
-        "discriminant_bits": max(1, discriminant_value.bit_length()),
+        **_discriminant_metrics(discriminant),
     }
 
 
@@ -401,6 +432,9 @@ def load_cases(corpora: Mapping[str, Path], workload_ids: tuple[str, ...]) -> li
                 expected_success = row.get("expected_success", True) if workload == CLASS_UNIT else True
                 backends = row.get("optimization_external_engines")
                 eligible = ("silex", *backends) if isinstance(backends, list) else ()
+                tags = _field_tags(row)
+                if workload == ELEMENT_SQUARE_ROOT and metrics["degree"] > 9:
+                    tags.discard("publication")
                 cases.append(
                     Case(
                         id=identifier,
@@ -409,7 +443,7 @@ def load_cases(corpora: Mapping[str, Path], workload_ids: tuple[str, ...]) -> li
                             "coefficients_low_to_high": list(coefficients),
                             "timeout_seconds": row.get("timeout_seconds"),
                         },
-                        tags=tuple(sorted(_field_tags(row))),
+                        tags=tuple(sorted(tags)),
                         metrics=metrics,
                         expected=common_expected,
                         expected_status="success" if expected_success else "failure",
@@ -431,7 +465,9 @@ def load_cases(corpora: Mapping[str, Path], workload_ids: tuple[str, ...]) -> li
         rows = module.validate_manifest(payload)
         for index, row in enumerate(rows):
             coefficients = row["coefficients_low_to_high"]
-            discriminant = abs(int(row.get("maximal_order_discriminant", 0)))
+            discriminant = _exact_discriminant(
+                row, f"S-unit corpus row {row.get('id', '<unknown>')}"
+            )
             height = max(abs(value) for value in coefficients)
             tags = {"all", "sunit", "dev", "scale", "publication"}
             if row["id"] in _QUICK_SUNIT_FIELDS or index == 0:
@@ -446,7 +482,7 @@ def load_cases(corpora: Mapping[str, Path], workload_ids: tuple[str, ...]) -> li
                         "degree": len(coefficients) - 1,
                         "s_size": len(row.get("selected_primes", [])),
                         "coefficient_bits": max(1, height.bit_length()),
-                        "discriminant_bits": max(1, discriminant.bit_length()),
+                        **_discriminant_metrics(discriminant),
                     },
                     expected=dict(row.get("expected", {})),
                     performance_eligible=True,

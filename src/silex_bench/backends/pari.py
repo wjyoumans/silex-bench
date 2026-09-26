@@ -1,6 +1,6 @@
 """PARI/GP benchmark adapter.
 
-The class/unit proof contract follows PARI's ``bnfinit(P, 1)`` followed by a
+The class/unit proof contract follows PARI's ``bnfinit(nf, 1)`` followed by a
 checked ``bnfcertify``.  Result extraction deliberately uses GP's named BNF
 members instead of representation-dependent vector offsets.
 """
@@ -292,55 +292,17 @@ def _parse_invariants(value: str | None) -> list[str] | None:
         return None
 
 
-def _warmup_program(request: SampleRequest) -> str:
-    if request.warmup is None:
-        return ""
-    if request.warmup.degree != request.field.degree:
-        raise ValueError("PARI warmup field must have the target degree")
-    if (
-        request.warmup.id == request.field.id
-        or request.warmup.coefficients_low_to_high
-        == request.field.coefficients_low_to_high
-    ):
-        raise ValueError("PARI warmup field must be distinct from the target")
-    polynomial = polynomial_expr(request.warmup.coefficients_low_to_high)
-    if request.operation == "class_unit_proven":
-        return f"""
-warm_P = {polynomial};
-warm_bnf = bnfinit(warm_P, 1);
-if (!bnfcertify(warm_bnf), error("warmup certification failed"));
-"""
-    if request.operation == "maximal_order":
-        return f"""
-warm_P = {polynomial};
-warm_nf = nfinit(warm_P);
-"""
-    if request.operation == "ideal_multiply":
-        return f"""
-warm_P = {polynomial};
-warm_nf = nfinit(warm_P);
-warm_left = idealhnf(warm_nf, 2);
-warm_right = idealhnf(warm_nf, 3);
-warm_product = idealmul(warm_nf, warm_left, warm_right);
-warm_norm = idealnorm(warm_nf, warm_product);
-"""
-    if request.operation == "element_square_root":
-        return f"""
-warm_P = {polynomial};
-warm_nf = nfinit(warm_P);
-warm_square = (x + 1)^2;
-warm_root = 0;
-warm_found = nfeltissquare(warm_nf, warm_square, &warm_root);
-if (!warm_found || nfeltmul(warm_nf, warm_root, warm_root) != nfalgtobasis(warm_nf, warm_square), error("warmup square-root verification failed"));
-"""
-    raise ValueError(f"unsupported PARI operation: {request.operation}")
-
-
 def _programs(request: SampleRequest) -> tuple[str, str, str]:
     polynomial = polynomial_expr(request.field.coefficients_low_to_high)
-    warmup = _warmup_program(request)
     setup = ""
-    if request.operation == "ideal_multiply":
+    if request.operation == "class_unit_proven":
+        setup = f"""
+P = {polynomial};
+nf = nfinit(P);
+"""
+    elif request.operation == "maximal_order":
+        setup = f"P = {polynomial};\n"
+    elif request.operation == "ideal_multiply":
         setup = f"""
 P = {polynomial};
 nf = nfinit(P);
@@ -351,7 +313,8 @@ right_ideal = idealhnf(nf, 3);
         setup = f"""
 P = {polynomial};
 nf = nfinit(P);
-square_target = (x + 1)^2;
+square_base = nfalgtobasis(nf, x + 1);
+square_target = nfeltmul(nf, square_base, square_base);
 square_root = 0;
 """
 
@@ -359,19 +322,16 @@ square_root = 0;
 default(nbthreads, {_REQUESTED_THREADS});
 benchmark_reported_threads = default(nbthreads);
 setrand({request.seed});
-{warmup}
-setrand({request.seed});
 {setup}
 print("{_READY_MARKER}");
 """
 
     if request.operation == "class_unit_proven":
         target = f"""
-P = {polynomial};
 target_cpu_start_ms = getabstime();
 target_wall_start_ms = getwalltime();
 gettime();
-b = bnfinit(P, 1);
+b = bnfinit(nf, 1);
 bnfinit_ms = gettime();
 gettime();
 certified = bnfcertify(b);
@@ -388,7 +348,7 @@ print("component_bnfinit_ms=", bnfinit_ms);
 print("component_certification_ms=", certification_ms);
 print("class_order=", b.no);
 print("class_invariants=", b.cyc);
-print("unit_rank=", #b.fu);
+print("unit_rank=", b.r1 + b.r2 - 1);
 print("polynomial_discriminant=", poldisc(P));
 print("maximal_order_discriminant=", b.disc);
 print("signature_r1=", b.r1);
@@ -401,7 +361,6 @@ quit
 
     if request.operation == "maximal_order":
         target = f"""
-P = {polynomial};
 target_cpu_start_ms = getabstime();
 target_wall_start_ms = getwalltime();
 gettime();
@@ -457,7 +416,7 @@ target_internal_wall_ms = getwalltime() - target_wall_start_ms;
 print("{_TARGET_MARKER}:{TARGET_NONCE_PLACEHOLDER}");
 """
         final = """
-root_verified = root_found && nfeltmul(nf, square_root, square_root) == nfalgtobasis(nf, square_target);
+root_verified = root_found && nfeltmul(nf, square_root, square_root) == square_target;
 print("target_internal_cpu_ms=", target_internal_cpu_ms);
 print("target_internal_wall_ms=", target_internal_wall_ms);
 print("component_square_root_ms=", square_root_ms);
@@ -717,12 +676,13 @@ class PariBackend(BackendAdapter):
             "algorithm_clock": "pari_getabstime_ms",
             "wall_clock": "pari_getwalltime_ms",
             "component_clock": "pari_gettime_ms",
-            "scope": (
-                "field_setup_through_result"
-                if request.operation in {"class_unit_proven", "maximal_order"}
-                else "named_operation_only"
-            ),
-            "warmup_excluded": True,
+            "scope": {
+                "class_unit_proven": "class_and_unit_group_only",
+                "maximal_order": "maximal_order_only",
+                "ideal_multiply": "ideal_multiplication_only",
+                "element_square_root": "number_field_element_is_square_only",
+            }[request.operation],
+            "preparation_excluded": True,
             "target_cpu_ms": target_cpu_ms,
             "target_wall_ms": target_wall_ms,
             "marked_target_cpu_ms": marked_target_cpu_ms,

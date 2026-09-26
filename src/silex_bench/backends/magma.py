@@ -124,70 +124,18 @@ K_{suffix}<a_{suffix}> := NumberField(f_{suffix});
 """
 
 
-def _warmup_program(operation: str, field: FieldSpec) -> str:
-    setup = _field_program(field, "warm")
-    if operation == "class_unit_proven":
-        body = """
-O_warm := MaximalOrder(K_warm);
-C_warm, class_map_warm := ClassGroup(O_warm : Proof := "Full");
-U_warm, unit_map_warm := UnitGroup(O_warm : GRH := false);
-"""
-    elif operation == "maximal_order":
-        body = "O_warm := MaximalOrder(K_warm);\n"
-    elif operation == "ideal_multiply":
-        body = """
-O_warm := MaximalOrder(K_warm);
-I2_warm := ideal<O_warm | 2>;
-I3_warm := ideal<O_warm | 3>;
-product_warm := I2_warm * I3_warm;
-"""
-    elif operation == "element_square_root":
-        body = """
-square_warm := (K_warm!1 + a_warm)^2;
-found_warm, root_warm := IsSquare(square_warm);
-"""
-    else:  # The request model validates operations before adapter dispatch.
-        raise ValueError(f"unsupported Magma operation: {operation}")
-    return setup + body
-
-
 def _program_parts(request: SampleRequest) -> tuple[str, str, str]:
-    warmup = ""
-    if request.sample_kind == "warm_algorithm":
-        if request.warmup is None:
-            raise ValueError("warm_algorithm sample requires a warmup field")
-        if request.warmup.degree != request.field.degree:
-            raise ValueError("Magma warmup field must have the target degree")
-        if (
-            request.warmup.id == request.field.id
-            or request.warmup.coefficients_low_to_high
-            == request.field.coefficients_low_to_high
-        ):
-            raise ValueError("Magma warmup field must be distinct from the target")
-        warmup = _warmup_program(request.operation, request.warmup)
-
     ready = f"""
 SetNthreads(1);
-SetSeed({request.seed});
-{warmup}
 SetSeed({request.seed});
 """
 
     setup = _field_program(request.field, "target")
     if request.operation == "class_unit_proven":
+        ready += setup + "O_target := MaximalOrder(K_target);\n"
         target = f"""
 target_cpu_start := Cputime();
 target_wall_start := Realtime();
-field_cpu_start := Cputime();
-field_wall_start := Realtime();
-{setup}
-field_cpu_seconds := Cputime(field_cpu_start);
-field_wall_seconds := Realtime(field_wall_start);
-maximal_cpu_start := Cputime();
-maximal_wall_start := Realtime();
-O_target := MaximalOrder(K_target);
-maximal_cpu_seconds := Cputime(maximal_cpu_start);
-maximal_wall_seconds := Realtime(maximal_wall_start);
 class_cpu_start := Cputime();
 class_wall_start := Realtime();
 C_target, class_map_target := ClassGroup(O_target : Proof := "Full");
@@ -210,10 +158,6 @@ printf "unit_rank=%o\\n", UnitRank(O_target);
 printf "signature_r1=%o\\n", r1_target;
 printf "signature_r2=%o\\n", r2_target;
 printf "maximal_order_discriminant=%o\\n", Discriminant(O_target);
-printf "field_cpu_seconds=%o\\n", field_cpu_seconds;
-printf "field_wall_seconds=%o\\n", field_wall_seconds;
-printf "maximal_cpu_seconds=%o\\n", maximal_cpu_seconds;
-printf "maximal_wall_seconds=%o\\n", maximal_wall_seconds;
 printf "class_cpu_seconds=%o\\n", class_cpu_seconds;
 printf "class_wall_seconds=%o\\n", class_wall_seconds;
 printf "unit_cpu_seconds=%o\\n", unit_cpu_seconds;
@@ -223,10 +167,10 @@ printf "target_internal_wall_seconds=%o\\n", target_internal_wall_seconds;
 quit;
 """
     elif request.operation == "maximal_order":
+        ready += setup
         target = f"""
 target_cpu_start := Cputime();
 target_wall_start := Realtime();
-{setup}
 O_target := MaximalOrder(K_target);
 target_internal_cpu_seconds := Cputime(target_cpu_start);
 target_internal_wall_seconds := Realtime(target_wall_start);
@@ -357,8 +301,8 @@ def _timing(
     marked_process_affinity: list[int] | None,
 ) -> dict[str, Any]:
     scopes = {
-        "class_unit_proven": "field_maximal_order_class_group_unit_group",
-        "maximal_order": "field_creation_and_maximal_order",
+        "class_unit_proven": "class_and_unit_group_only",
+        "maximal_order": "maximal_order_only",
         "ideal_multiply": "ideal_multiplication_only",
         "element_square_root": "number_field_element_is_square_only",
     }
@@ -367,7 +311,7 @@ def _timing(
         "algorithm_clock": "magma_cputime",
         "wall_clock": "magma_realtime",
         "component_clock": "magma_cputime_and_realtime",
-        "warmup_excluded": True,
+        "preparation_excluded": True,
         "target_cpu_ms": target_cpu_ms,
         "target_wall_ms": target_wall_ms,
         "internal_cpu_ms": _milliseconds(
@@ -388,7 +332,7 @@ def _timing(
                     values, f"{component}_wall_seconds"
                 ),
             }
-            for component in ("field", "maximal", "class", "unit")
+            for component in ("class", "unit")
         }
     return timing
 

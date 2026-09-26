@@ -18,7 +18,7 @@ from silex_bench.configuration import (
 from silex_bench.contracts import validate_campaign_manifest
 from silex_bench.ledger import RunLedger
 from silex_bench.workloads import MAXIMAL_ORDER
-from test.test_campaign import fake_registry
+from silex_bench_test_support import fake_registry
 
 
 class ManifestAndLedgerValidationTests(unittest.TestCase):
@@ -62,8 +62,9 @@ class ManifestAndLedgerValidationTests(unittest.TestCase):
             description="",
             include_tags=("quick",),
             exclude_tags=(),
+            backend_exclusions=(),
             repetitions=1,
-            warmups=0,
+            jit_repetitions=0,
             timeout_seconds=1,
             budget_seconds=None,
             cpu=None,
@@ -115,6 +116,16 @@ class ManifestAndLedgerValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "sample_count"):
             validate_campaign_manifest(count_drift)
 
+    def test_manifest_rejects_publication_without_clean_source_enforcement(self) -> None:
+        manifest = copy.deepcopy(self._manifest())
+        execution = manifest["plan"]["execution"]
+        execution["publication"] = True
+        execution["repetitions"] = 3
+        execution["minimum_repetitions"] = 3
+        execution["require_clean_sources"] = False
+        with self.assertRaisesRegex(ValueError, "clean-source enforcement"):
+            validate_campaign_manifest(manifest)
+
     def test_existing_ledger_rejects_row_fingerprint_and_state_drift(self) -> None:
         variants = {
             "fingerprint": ("UPDATE run SET fingerprint = ?", ("0" * 64,), "fingerprint"),
@@ -137,6 +148,10 @@ class ManifestAndLedgerValidationTests(unittest.TestCase):
             sqlite3.connect(self.run_dir / "run.sqlite")
         ) as connection:
             with connection:
+                connection.execute(
+                    "DELETE FROM timing_samples "
+                    "WHERE backend = 'pari' AND repetition = 0"
+                )
                 connection.execute(
                     "DELETE FROM observations WHERE backend = 'pari' AND repetition = 0"
                 )

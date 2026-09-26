@@ -10,11 +10,15 @@ from silex_bench import campaign
 from silex_bench.backends.hecke import HeckeBackend
 from silex_bench.backends.pari import PariBackend
 from silex_bench.backends.silex import SILEX_BENCHMARK_CMAKE_CACHE_REQUIREMENTS
-from silex_bench.contracts import InvocationContext
+from silex_bench.contracts import Case, InvocationContext, ValidationResult
 from silex_bench.model import BackendContext
-from silex_bench.registry import _sunit_arguments, builtin_registry
+from silex_bench.registry import (
+    SUnitImplementation,
+    _sunit_arguments,
+    builtin_registry,
+)
 from silex_bench.resources import builtin_path
-from silex_bench.workloads import sunit_module
+from silex_bench.workloads import SUNIT, sunit_module
 
 
 def backend_context(root: Path) -> BackendContext:
@@ -308,6 +312,74 @@ class SUnitAdapterReliabilityTests(unittest.TestCase):
         self.assertIsNone(result["engine_identity"]["source"])
         self.assertIsNone(result["engine_identity"]["source_version"])
 
+    def test_pari_probe_and_target_share_one_monotonic_deadline(self) -> None:
+        current = [100.0]
+        timeouts: list[float] = []
+
+        def run_process(
+            command: list[str], **kwargs: object
+        ) -> dict[str, object]:
+            timeouts.append(float(kwargs["timeout"]))
+            if "--version-short" in command:
+                current[0] += 6.0
+                return process_result(success=True, stdout="2.17.3\n")
+            return process_result(success=False, stderr="fixture stopped")
+
+        args = SimpleNamespace(
+            gp="gp",
+            pari_source=None,
+            pari_version=None,
+            timeout=10.0,
+            cpu=None,
+            environment={},
+        )
+        with mock.patch.object(
+            self.module.shutil, "which", return_value="/usr/bin/gp"
+        ), mock.patch.object(
+            self.module.time, "monotonic", side_effect=lambda: current[0]
+        ), mock.patch.object(
+            self.module, "run_process", side_effect=run_process
+        ):
+            self.module.run_pari(args, self.row)
+
+        self.assertEqual(timeouts, [10.0, 4.0])
+
+    def test_pari_does_not_start_target_after_probe_exhausts_deadline(self) -> None:
+        current = [100.0]
+        commands: list[list[str]] = []
+
+        def run_process(
+            command: list[str], **_kwargs: object
+        ) -> dict[str, object]:
+            commands.append(command)
+            if "--version-short" not in command:
+                raise AssertionError("target process started after its deadline")
+            current[0] += 10.0
+            return process_result(success=True, stdout="2.17.3\n")
+
+        args = SimpleNamespace(
+            gp="gp",
+            pari_source=None,
+            pari_version=None,
+            timeout=10.0,
+            cpu=None,
+            environment={},
+        )
+        with mock.patch.object(
+            self.module.shutil, "which", return_value="/usr/bin/gp"
+        ), mock.patch.object(
+            self.module.time, "monotonic", side_effect=lambda: current[0]
+        ), mock.patch.object(
+            self.module, "run_process", side_effect=run_process
+        ):
+            result = self.module.run_pari(args, self.row)
+
+        self.assertEqual(len(commands), 1)
+        self.assertFalse(result["success"])
+        self.assertTrue(result["timeout"])
+        self.assertEqual(result["failure_stage"], "observation_deadline")
+        self.assertIn("before target execution", result["failure_reason"])
+
     def test_pari_path_only_identity_is_valid_for_agreement(self) -> None:
         result = {
             "engine": "pari",
@@ -372,9 +444,11 @@ class SUnitAdapterReliabilityTests(unittest.TestCase):
 
     def test_hecke_path_only_execution_uses_standard_julia_flags(self) -> None:
         commands: list[list[str]] = []
+        timeouts: list[float] = []
 
-        def run_process(command: list[str], **_kwargs: object) -> dict[str, object]:
+        def run_process(command: list[str], **kwargs: object) -> dict[str, object]:
             commands.append(command)
+            timeouts.append(float(kwargs["timeout"]))
             return process_result(success=False, stderr="fixture stopped")
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -400,7 +474,71 @@ class SUnitAdapterReliabilityTests(unittest.TestCase):
         self.assertIn("--history-file=no", commands[0])
         self.assertIn("--threads=1", commands[0])
         self.assertFalse(any(item.startswith("--project=") for item in commands[0]))
+        self.assertEqual(timeouts, [1.0])
         self.assertEqual(result["failure_stage"], "external_execution")
+
+    def test_sunit_whole_process_timing_declares_its_monotonic_clock(self) -> None:
+        payload = {
+            "available": True,
+            "success": True,
+            "timeout": False,
+            "process_wall_ms": 12.5,
+            "engine_identity": {},
+        }
+        module = SimpleNamespace(
+            run_silex=lambda _args, _row: payload,
+            run_pari=lambda _args, _row: payload,
+            run_hecke=lambda _args, _row: payload,
+        )
+        case = Case(
+            id="clock",
+            workload=SUNIT,
+            input={},
+            tags=(),
+            metrics={},
+            expected={},
+        )
+        contract = SimpleNamespace(
+            timing_scope="whole_process",
+            validate_observation=lambda *_args: ValidationResult(True),
+        )
+        context = InvocationContext(
+            bench_root=self.root,
+            workspace=self.root.parent,
+            silex_source=self.root.parent / "silex",
+            silex_build_dir=self.root.parent / "silex" / "build",
+            tools={},
+            timeout_seconds=10.0,
+            cpu=None,
+            environment={},
+        )
+
+        with mock.patch("silex_bench.registry.sunit_module", return_value=module):
+            observation = SUnitImplementation("pari").run(
+                case,
+                repetition=0,
+                order_index=0,
+                warmup=None,
+                context=context,
+                contract=contract,
+            )
+
+        self.assertEqual(
+            observation.internal_timing["wall_clock"],
+            "python_perf_counter_monotonic",
+        )
+        self.assertEqual(observation.internal_timing["scope"], "whole_process")
+        self.assertNotIn("algorithm_clock", observation.internal_timing)
+        self.assertEqual(len(observation.timing_samples), 1)
+        self.assertEqual(
+            observation.timing_samples[0].wall_clock,
+            "python_perf_counter_monotonic",
+        )
+        self.assertEqual(
+            observation.timing_samples[0].timing_scope,
+            "whole_process",
+        )
+        self.assertIsNone(observation.timing_samples[0].cpu_clock)
 
 
 if __name__ == "__main__":

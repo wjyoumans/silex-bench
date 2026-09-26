@@ -16,6 +16,58 @@ def _text(value: Any) -> str:
     return str(value)
 
 
+def _member(value: Any, name: str, default: Any = None) -> Any:
+    if isinstance(value, Mapping):
+        return value.get(name, default)
+    return getattr(value, name, default)
+
+
+def _status_text(value: Any) -> str:
+    status = _member(value, "value", value)
+    return str(status) if status is not None else "unknown"
+
+
+def _duration_ns(value: Any) -> str | None:
+    if type(value) is not int or value < 0:
+        return None
+    if value >= 1_000_000_000:
+        return f"{value / 1_000_000_000:.3f} s"
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.3f} ms"
+    if value >= 1_000:
+        return f"{value / 1_000:.3f} us"
+    return f"{value} ns"
+
+
+def render_progress(observation: Any, completed: int, total: int) -> str:
+    """Render one permanent, newline-ready completed-observation record."""
+
+    timing_samples = _member(observation, "timing_samples")
+    samples = list(timing_samples) if timing_samples is not None else []
+    if not samples and _member(observation, "target_wall_ns") is not None:
+        samples = [
+            {
+                "variant": "standard",
+                "status": _member(observation, "status"),
+                "target_wall_ns": _member(observation, "target_wall_ns"),
+            }
+        ]
+    rendered_samples: list[str] = []
+    for sample in samples:
+        variant = str(_member(sample, "variant", "standard"))
+        duration = _duration_ns(_member(sample, "target_wall_ns"))
+        value = duration or _status_text(_member(sample, "status"))
+        rendered_samples.append(f"{variant}={value}")
+    suffix = "" if not rendered_samples else "; " + ", ".join(rendered_samples)
+    repetition = _member(observation, "repetition")
+    repetition_text = "-" if type(repetition) is not int else str(repetition + 1)
+    return (
+        f"[{completed}/{total}] {_member(observation, 'case_key', '-')}/"
+        f"{_member(observation, 'backend', '-')} rep={repetition_text}: "
+        f"{_status_text(_member(observation, 'status'))}{suffix}"
+    )
+
+
 def table(headers: Sequence[str], rows: Iterable[Sequence[Any]]) -> str:
     """Render one compact ASCII table without terminal-dependent styling."""
 
@@ -93,13 +145,32 @@ def render_plan(payload: Mapping[str, Any]) -> str:
         ("Cases", payload.get("case_count")),
         ("Observations", payload.get("sample_count")),
         ("Repetitions", execution.get("repetitions")),
-        ("Per-observation timeout", _seconds(execution.get("timeout_seconds"))),
+        ("Observation timeout ceiling", _seconds(execution.get("timeout_seconds"))),
         ("Campaign budget", _seconds(execution.get("budget_seconds"))),
         ("CPU", execution.get("cpu")),
         ("Required pairs", pair_text),
         ("Require all adapters", execution.get("require_all_adapters", False)),
     )
     lines = ["Campaign plan", table(("Setting", "Value"), rows)]
+    exclusions = execution.get("backend_exclusions", [])
+    if exclusions:
+        lines.extend(
+            (
+                "",
+                "Profile backend exclusions",
+                table(
+                    ("Adapter", "Workload", "Reason"),
+                    (
+                        (
+                            row.get("backend"),
+                            row.get("workload"),
+                            row.get("reason"),
+                        )
+                        for row in exclusions
+                    ),
+                ),
+            )
+        )
     cases = payload.get("cases", [])
     if cases:
         lines.extend(
@@ -245,27 +316,6 @@ def render_campaign(payload: Mapping[str, Any]) -> str:
             f"  - {row.get('case_key')}/{row.get('backend')}: "
             f"{row.get('status')} ({row.get('error') or 'no detail'})"
             for row in failures
-        )
-    ratios = payload.get("aggregate_ratios", [])
-    if ratios:
-        lines.extend(
-            (
-                "",
-                "Aggregate speedups (baseline / candidate)",
-                table(
-                    ("Workload", "Candidate", "Baseline", "Cases", "Speedup"),
-                    (
-                        (
-                            row.get("workload"),
-                            row.get("candidate"),
-                            row.get("baseline"),
-                            row.get("case_count"),
-                            f"{row.get('geometric_mean_speedup'):.3f}x",
-                        )
-                        for row in ratios
-                    ),
-                ),
-            )
         )
     report = payload.get("report")
     if isinstance(report, Mapping):

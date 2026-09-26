@@ -2,7 +2,11 @@
 
 The rigorous class/unit route follows Hecke's public API with
 ``class_group(...; GRH=false, redo=true)`` and
-``unit_group(...; GRH=false)``.
+``unit_group(...; GRH=false)``.  Hecke's class-group call computes and stores
+the shared class/unit context, so the immediately following unit-group call is
+intentionally a same-sample lookup from that context.  Each JIT timing uses an
+independently constructed field and order, preventing mathematical caches from
+crossing the first-call/repeat-call boundary.
 """
 
 from __future__ import annotations
@@ -209,29 +213,6 @@ def _parse_invariants(value: str | None) -> list[str] | None:
         return None
 
 
-def _warmup_call(request: SampleRequest) -> str:
-    if request.warmup is None:
-        return ""
-    if request.warmup.degree != request.field.degree:
-        raise ValueError("Hecke warmup field must have the target degree")
-    if (
-        request.warmup.id == request.field.id
-        or request.warmup.coefficients_low_to_high
-        == request.field.coefficients_low_to_high
-    ):
-        raise ValueError("Hecke warmup field must be distinct from the target")
-    polynomial = polynomial_expr(request.warmup.coefficients_low_to_high)
-    function = {
-        "class_unit_proven": "bench_warm_class_unit",
-        "maximal_order": "bench_warm_maximal_order",
-        "ideal_multiply": "bench_warm_ideal_multiply",
-        "element_square_root": "bench_warm_square_root",
-    }.get(request.operation)
-    if function is None:
-        raise ValueError(f"unsupported Hecke operation: {request.operation}")
-    return f"{function}({polynomial})"
-
-
 _HELPERS = r"""
 using Hecke
 using Random
@@ -251,202 +232,261 @@ end
 function bench_field(f)
   return number_field(f, "a", cached = false)
 end
-
-function bench_warm_class_unit(f)
-  K, a = bench_field(f)
-  O = maximal_order(K)
-  C, mC = class_group(O; GRH = false, redo = true)
-  U, mU = unit_group(O; GRH = false)
-  return order(C), rank(U)
-end
-
-function bench_warm_maximal_order(f)
-  K, a = bench_field(f)
-  O = maximal_order(K)
-  return discriminant(O)
-end
-
-function bench_warm_ideal_multiply(f)
-  K, a = bench_field(f)
-  O = maximal_order(K)
-  left = ideal(O, ZZ(2))
-  right = ideal(O, ZZ(3))
-  return norm(left * right)
-end
-
-function bench_warm_square_root(f)
-  K, a = bench_field(f)
-  value = (K(1) + a)^2
-  found, root = is_square_with_sqrt(value)
-  found && root^2 == value || error("warmup square-root verification failed")
-  return root
-end
 """
 
 
-def _programs(request: SampleRequest) -> tuple[str, str, str]:
-    polynomial = polynomial_expr(request.field.coefficients_low_to_high)
-    warmup = _warmup_call(request)
-    setup = ""
-    if request.operation == "ideal_multiply":
-        setup = f"""
-P = {polynomial}
-target_K, target_a = bench_field(P)
-target_O = maximal_order(target_K)
-left_ideal = ideal(target_O, ZZ(2))
-right_ideal = ideal(target_O, ZZ(3))
-"""
-    elif request.operation == "element_square_root":
-        setup = f"""
-P = {polynomial}
-target_K, target_a = bench_field(P)
-square_target = (target_K(1) + target_a)^2
-"""
+_TIMING_SCOPES = {
+    "class_unit_proven": "class_and_unit_group_only",
+    "maximal_order": "maximal_order_only",
+    "ideal_multiply": "ideal_multiplication_only",
+    "element_square_root": "number_field_element_is_square_only",
+}
 
-    ready = f"""
-{_HELPERS}
-Random.seed!({request.seed})
-{warmup}
-Random.seed!({request.seed})
-{setup}
-GC.gc()
-println("{_READY_MARKER}")
+_CLASS_UNIT_CACHE_POLICY = (
+    "class_group(redo=true) recomputes Hecke's shared class/unit context; "
+    "unit_group then retrieves that same-sample context; each timing sample "
+    "uses an independent fresh field and order"
+)
+
+
+def _sample_prefixes(request: SampleRequest) -> tuple[str, ...]:
+    if request.jit_repetitions == 0:
+        return ("target",)
+    if request.jit_repetitions == 1:
+        return ("first", "repeat")
+    raise ValueError("Hecke JIT repetitions currently supports only zero or one")
+
+
+def _preparation(operation: str, prefix: str, seed: int) -> str:
+    common = f"""
+Random.seed!({seed})
+{prefix}_K, {prefix}_a = bench_field(P)
+"""
+    if operation == "class_unit_proven":
+        return common + f"{prefix}_O = lll(maximal_order({prefix}_K))\n"
+    if operation == "maximal_order":
+        return common
+    if operation == "ideal_multiply":
+        return common + f"""
+{prefix}_O = maximal_order({prefix}_K)
+{prefix}_left_ideal = ideal({prefix}_O, ZZ(2))
+{prefix}_right_ideal = ideal({prefix}_O, ZZ(3))
+"""
+    if operation == "element_square_root":
+        return common + f"""
+{prefix}_square = ({prefix}_K(1) + {prefix}_a)^2
+"""
+    raise ValueError(f"unsupported Hecke operation: {operation}")
+
+
+def _timed_call(
+    operation: str,
+    prefix: str,
+    *,
+    output_prefix: str,
+    seed: int,
+) -> str:
+    key = output_prefix
+    start = f"""
+Random.seed!({seed})
+{prefix}_cpu_t0 = bench_process_cpu_ns()
+{prefix}_wall_t0 = time_ns()
+"""
+    if operation == "class_unit_proven":
+        body = f"""
+{prefix}_class_t0 = time_ns()
+{prefix}_C, {prefix}_mC = class_group(
+  {prefix}_O; GRH = false, redo = true, do_lll = false
+)
+{prefix}_class_group_ms = (time_ns() - {prefix}_class_t0) / 1.0e6
+{prefix}_unit_t0 = time_ns()
+{prefix}_U, {prefix}_mU = unit_group({prefix}_O; GRH = false)
+{prefix}_unit_group_ms = (time_ns() - {prefix}_unit_t0) / 1.0e6
+"""
+        timing_lines = f"""
+println("{key}component_class_group_ms=", {prefix}_class_group_ms)
+println("{key}component_unit_group_ms=", {prefix}_unit_group_ms)
+"""
+    elif operation == "maximal_order":
+        body = f"""
+{prefix}_O = maximal_order({prefix}_K)
+{prefix}_maximal_order_ms = (time_ns() - {prefix}_wall_t0) / 1.0e6
+"""
+        timing_lines = (
+            f'println("{key}component_maximal_order_ms=", '
+            f"{prefix}_maximal_order_ms)\n"
+        )
+    elif operation == "ideal_multiply":
+        body = f"""
+{prefix}_product_ideal = {prefix}_left_ideal * {prefix}_right_ideal
+{prefix}_ideal_multiply_ms = (time_ns() - {prefix}_wall_t0) / 1.0e6
+"""
+        timing_lines = (
+            f'println("{key}component_ideal_multiply_ms=", '
+            f"{prefix}_ideal_multiply_ms)\n"
+        )
+    elif operation == "element_square_root":
+        body = f"""
+{prefix}_root_found, {prefix}_square_root = is_square_with_sqrt({prefix}_square)
+{prefix}_square_root_ms = (time_ns() - {prefix}_wall_t0) / 1.0e6
+"""
+        timing_lines = (
+            f'println("{key}component_square_root_ms=", '
+            f"{prefix}_square_root_ms)\n"
+        )
+    else:
+        raise ValueError(f"unsupported Hecke operation: {operation}")
+    finish = f"""
+{prefix}_internal_target_wall_ms = (time_ns() - {prefix}_wall_t0) / 1.0e6
+{prefix}_cpu_t1 = bench_process_cpu_ns()
+{prefix}_internal_target_cpu_ms = (
+  {prefix}_cpu_t0 === nothing || {prefix}_cpu_t1 === nothing ||
+  {prefix}_cpu_t1 < {prefix}_cpu_t0
+) ? nothing : ({prefix}_cpu_t1 - {prefix}_cpu_t0) / 1.0e6
+{timing_lines}
+println("{key}internal_target_cpu_ms=", {prefix}_internal_target_cpu_ms)
+println("{key}internal_target_wall_ms=", {prefix}_internal_target_wall_ms)
 flush(stdout)
 """
+    return start + body + finish
 
-    if request.operation == "class_unit_proven":
-        target = f"""
-P = {polynomial}
-target_cpu_t0 = bench_process_cpu_ns()
-total_t0 = time_ns()
-field_t0 = time_ns()
-target_K, target_a = bench_field(P)
+
+def _standard_result(operation: str) -> str:
+    if operation == "class_unit_proven":
+        return """
 target_signature = signature(target_K)
-polynomial_discriminant = discriminant(P)
-field_setup_ms = (time_ns() - field_t0) / 1.0e6
-maximal_t0 = time_ns()
-target_O = maximal_order(target_K)
-maximal_order_discriminant = discriminant(target_O)
-maximal_order_ms = (time_ns() - maximal_t0) / 1.0e6
-class_t0 = time_ns()
-target_C, target_mC = class_group(target_O; GRH = false, redo = true)
-class_group_ms = (time_ns() - class_t0) / 1.0e6
-unit_t0 = time_ns()
-target_U, target_mU = unit_group(target_O; GRH = false)
-unit_group_ms = (time_ns() - unit_t0) / 1.0e6
-internal_target_wall_ms = (time_ns() - total_t0) / 1.0e6
-target_cpu_t1 = bench_process_cpu_ns()
-internal_target_cpu_ms = target_cpu_t0 === nothing || target_cpu_t1 === nothing ||
-                         target_cpu_t1 < target_cpu_t0 ? nothing :
-                         (target_cpu_t1 - target_cpu_t0) / 1.0e6
-println("{_TARGET_MARKER}:" * benchmark_target_nonce)
-flush(stdout)
-"""
-        final = """
-println("component_field_setup_ms=", field_setup_ms)
-println("component_maximal_order_ms=", maximal_order_ms)
-println("component_class_group_ms=", class_group_ms)
-println("component_unit_group_ms=", unit_group_ms)
-println("internal_target_cpu_ms=", internal_target_cpu_ms)
-println("internal_target_wall_ms=", internal_target_wall_ms)
 println("class_order=", order(target_C))
 println("class_invariants=", join(string.(elementary_divisors(target_C)), ","))
 println("unit_rank=", target_signature[1] + target_signature[2] - 1)
 println("signature_r1=", target_signature[1])
 println("signature_r2=", target_signature[2])
-println("polynomial_discriminant=", polynomial_discriminant)
-println("maximal_order_discriminant=", maximal_order_discriminant)
+println("polynomial_discriminant=", discriminant(P))
+println("maximal_order_discriminant=", discriminant(target_O))
 println("proof_complete=true")
-flush(stdout)
-exit()
 """
-        return ready, target, final
-
-    if request.operation == "maximal_order":
-        target = f"""
-P = {polynomial}
-target_cpu_t0 = bench_process_cpu_ns()
-total_t0 = time_ns()
-field_t0 = time_ns()
-target_K, target_a = bench_field(P)
+    if operation == "maximal_order":
+        return """
 target_signature = signature(target_K)
-polynomial_discriminant = discriminant(P)
-field_setup_ms = (time_ns() - field_t0) / 1.0e6
-maximal_t0 = time_ns()
-target_O = maximal_order(target_K)
-maximal_order_discriminant = discriminant(target_O)
-maximal_order_ms = (time_ns() - maximal_t0) / 1.0e6
-internal_target_wall_ms = (time_ns() - total_t0) / 1.0e6
-target_cpu_t1 = bench_process_cpu_ns()
-internal_target_cpu_ms = target_cpu_t0 === nothing || target_cpu_t1 === nothing ||
-                         target_cpu_t1 < target_cpu_t0 ? nothing :
-                         (target_cpu_t1 - target_cpu_t0) / 1.0e6
-println("{_TARGET_MARKER}:" * benchmark_target_nonce)
-flush(stdout)
-"""
-        final = """
-println("component_field_setup_ms=", field_setup_ms)
-println("component_maximal_order_ms=", maximal_order_ms)
-println("internal_target_cpu_ms=", internal_target_cpu_ms)
-println("internal_target_wall_ms=", internal_target_wall_ms)
-println("polynomial_discriminant=", polynomial_discriminant)
-println("maximal_order_discriminant=", maximal_order_discriminant)
+println("polynomial_discriminant=", discriminant(P))
+println("maximal_order_discriminant=", discriminant(target_O))
 println("signature_r1=", target_signature[1])
 println("signature_r2=", target_signature[2])
-flush(stdout)
-exit()
 """
-        return ready, target, final
+    if operation == "ideal_multiply":
+        return 'println("ideal_norm=", norm(target_product_ideal))\n'
+    if operation == "element_square_root":
+        return """
+target_root_verified = target_root_found && target_square_root^2 == target_square
+println("root_found=", target_root_found)
+println("root_verified=", target_root_verified)
+"""
+    raise ValueError(f"unsupported Hecke operation: {operation}")
 
-    if request.operation == "ideal_multiply":
-        target = f"""
-target_cpu_t0 = bench_process_cpu_ns()
-operation_t0 = time_ns()
-product_ideal = left_ideal * right_ideal
-ideal_multiply_ms = (time_ns() - operation_t0) / 1.0e6
-target_cpu_t1 = bench_process_cpu_ns()
-internal_target_cpu_ms = target_cpu_t0 === nothing || target_cpu_t1 === nothing ||
-                         target_cpu_t1 < target_cpu_t0 ? nothing :
-                         (target_cpu_t1 - target_cpu_t0) / 1.0e6
+
+def _paired_result(operation: str) -> str:
+    if operation == "class_unit_proven":
+        return """
+first_signature = signature(first_K)
+repeat_signature = signature(repeat_K)
+first_invariants = elementary_divisors(first_C)
+repeat_invariants = elementary_divisors(repeat_C)
+jit_results_agree = (
+  order(first_C) == order(repeat_C) &&
+  first_invariants == repeat_invariants &&
+  first_signature == repeat_signature &&
+  discriminant(first_O) == discriminant(repeat_O)
+)
+println("class_order=", order(repeat_C))
+println("class_invariants=", join(string.(repeat_invariants), ","))
+println("unit_rank=", repeat_signature[1] + repeat_signature[2] - 1)
+println("signature_r1=", repeat_signature[1])
+println("signature_r2=", repeat_signature[2])
+println("polynomial_discriminant=", discriminant(P))
+println("maximal_order_discriminant=", discriminant(repeat_O))
+println("proof_complete=true")
+println("jit_results_agree=", jit_results_agree)
+"""
+    if operation == "maximal_order":
+        return """
+first_signature = signature(first_K)
+repeat_signature = signature(repeat_K)
+jit_results_agree = (
+  discriminant(first_O) == discriminant(repeat_O) &&
+  first_signature == repeat_signature
+)
+println("polynomial_discriminant=", discriminant(P))
+println("maximal_order_discriminant=", discriminant(repeat_O))
+println("signature_r1=", repeat_signature[1])
+println("signature_r2=", repeat_signature[2])
+println("jit_results_agree=", jit_results_agree)
+"""
+    if operation == "ideal_multiply":
+        return """
+first_ideal_norm = norm(first_product_ideal)
+repeat_ideal_norm = norm(repeat_product_ideal)
+jit_results_agree = first_ideal_norm == repeat_ideal_norm
+println("ideal_norm=", repeat_ideal_norm)
+println("jit_results_agree=", jit_results_agree)
+"""
+    if operation == "element_square_root":
+        return """
+first_root_verified = first_root_found && first_square_root^2 == first_square
+repeat_root_verified = repeat_root_found && repeat_square_root^2 == repeat_square
+jit_results_agree = (
+  first_root_found == repeat_root_found &&
+  first_root_verified == repeat_root_verified
+)
+println("root_found=", repeat_root_found)
+println("root_verified=", repeat_root_verified)
+println("jit_results_agree=", jit_results_agree)
+"""
+    raise ValueError(f"unsupported Hecke operation: {operation}")
+
+
+def _programs(request: SampleRequest) -> tuple[str, str, str]:
+    prefixes = _sample_prefixes(request)
+    polynomial = polynomial_expr(request.field.coefficients_low_to_high)
+    preparations = "".join(
+        _preparation(request.operation, prefix, request.seed)
+        for prefix in prefixes
+    )
+    ready = f"""
+{_HELPERS}
+P = {polynomial}
+{preparations}
+GC.gc()
+println("{_READY_MARKER}")
+flush(stdout)
+"""
+
+    paired = len(prefixes) == 2
+    calls: list[str] = []
+    for index, prefix in enumerate(prefixes):
+        if index:
+            calls.append("GC.gc()\n")
+        output_prefix = f"{prefix}_" if paired else ""
+        calls.append(
+            _timed_call(
+                request.operation,
+                prefix,
+                output_prefix=output_prefix,
+                seed=request.seed,
+            )
+        )
+    target = "".join(calls) + f"""
 println("{_TARGET_MARKER}:" * benchmark_target_nonce)
 flush(stdout)
 """
-        final = """
-println("component_ideal_multiply_ms=", ideal_multiply_ms)
-println("internal_target_cpu_ms=", internal_target_cpu_ms)
-println("internal_target_wall_ms=", ideal_multiply_ms)
-println("ideal_norm=", norm(product_ideal))
+    result = (
+        _paired_result(request.operation)
+        if paired
+        else _standard_result(request.operation)
+    )
+    final = result + """
 flush(stdout)
 exit()
 """
-        return ready, target, final
-
-    if request.operation == "element_square_root":
-        target = f"""
-target_cpu_t0 = bench_process_cpu_ns()
-operation_t0 = time_ns()
-root_found, square_root = is_square_with_sqrt(square_target)
-square_root_ms = (time_ns() - operation_t0) / 1.0e6
-target_cpu_t1 = bench_process_cpu_ns()
-internal_target_cpu_ms = target_cpu_t0 === nothing || target_cpu_t1 === nothing ||
-                         target_cpu_t1 < target_cpu_t0 ? nothing :
-                         (target_cpu_t1 - target_cpu_t0) / 1.0e6
-println("{_TARGET_MARKER}:" * benchmark_target_nonce)
-flush(stdout)
-"""
-        final = """
-root_verified = root_found && square_root^2 == square_target
-println("component_square_root_ms=", square_root_ms)
-println("internal_target_cpu_ms=", internal_target_cpu_ms)
-println("internal_target_wall_ms=", square_root_ms)
-println("root_found=", root_found)
-println("root_verified=", root_verified)
-flush(stdout)
-exit()
-"""
-        return ready, target, final
-
-    raise ValueError(f"unsupported Hecke operation: {request.operation}")
+    return ready, target, final
 
 
 def _result(request: SampleRequest, values: dict[str, str]) -> dict[str, Any]:
@@ -483,25 +523,35 @@ def _result(request: SampleRequest, values: dict[str, str]) -> dict[str, Any]:
     return {}
 
 
-def _components(request: SampleRequest, values: dict[str, str]) -> dict[str, Any]:
+def _components(
+    request: SampleRequest,
+    values: dict[str, str],
+    *,
+    key_prefix: str = "",
+) -> dict[str, Any]:
     if request.operation == "class_unit_proven":
         return {
-            "field_setup": parse_float(values, "component_field_setup_ms"),
-            "maximal_order": parse_float(values, "component_maximal_order_ms"),
-            "class_group": parse_float(values, "component_class_group_ms"),
-            "unit_group": parse_float(values, "component_unit_group_ms"),
+            "class_group": parse_float(
+                values, f"{key_prefix}component_class_group_ms"
+            ),
+            "unit_group": parse_float(
+                values, f"{key_prefix}component_unit_group_ms"
+            ),
         }
     if request.operation == "maximal_order":
         return {
-            "field_setup": parse_float(values, "component_field_setup_ms"),
-            "maximal_order": parse_float(values, "component_maximal_order_ms"),
+            "maximal_order": parse_float(
+                values, f"{key_prefix}component_maximal_order_ms"
+            ),
         }
     key = {
         "ideal_multiply": "component_ideal_multiply_ms",
         "element_square_root": "component_square_root_ms",
     }.get(request.operation)
     return (
-        {request.operation: parse_float(values, key)} if key is not None else {}
+        {request.operation: parse_float(values, f"{key_prefix}{key}")}
+        if key is not None
+        else {}
     )
 
 
@@ -522,6 +572,100 @@ def _complete(request: SampleRequest, result: dict[str, Any], proven: bool) -> b
     if request.operation == "element_square_root":
         return result.get("root_found") is True and result.get("root_verified") is True
     return False
+
+
+def _timing_sample_payloads(
+    request: SampleRequest,
+    values: dict[str, str],
+    process: dict[str, Any],
+    *,
+    observation_success: bool,
+    results_agree: bool,
+) -> list[dict[str, Any]]:
+    paired = request.jit_repetitions == 1
+    variants = (
+        (("first", "first_call"), ("repeat", "repeat_call"))
+        if paired
+        else (("", "standard"),)
+    )
+    samples: list[dict[str, Any]] = []
+    for sample_index, (prefix, variant) in enumerate(variants):
+        key_prefix = f"{prefix}_" if prefix else ""
+        target_cpu_ms = parse_float(
+            values, f"{key_prefix}internal_target_cpu_ms"
+        )
+        target_wall_ms = parse_float(
+            values, f"{key_prefix}internal_target_wall_ms"
+        )
+        target_completed = target_wall_ms is not None
+        sample_timeout = (
+            process.get("timeout") is True and not target_completed
+        )
+        sample_success = observation_success and target_completed
+        sample_status = (
+            "ok"
+            if sample_success
+            else "timeout"
+            if sample_timeout
+            else "compute_error"
+        )
+        internal_timing: dict[str, Any] = {
+            "algorithm_clock": "clock_gettime_process_cpu",
+            "wall_clock": "julia_time_ns_monotonic",
+            "component_clock": "julia_time_ns_monotonic",
+            "preparation_excluded": True,
+            "target_cpu_ms": target_cpu_ms,
+            "target_wall_ms": target_wall_ms,
+            "components_ms": _components(
+                request, values, key_prefix=key_prefix
+            ),
+            "marked_process_affinity": process.get("effective_affinity"),
+            "cpu_launcher_executable": process.get("launcher_executable"),
+            "cpu_launcher_sha256": process.get("launcher_executable_sha256"),
+        }
+        if request.operation == "class_unit_proven":
+            internal_timing.update(
+                {
+                    "class_unit_cache_policy": _CLASS_UNIT_CACHE_POLICY,
+                    "cross_sample_mathematical_cache_reuse": False,
+                }
+            )
+        if paired:
+            internal_timing.update(
+                {
+                    "marked_pair_target_cpu_ms": process.get("target_cpu_ms"),
+                    "marked_pair_target_wall_ms": process.get("target_wall_ms"),
+                }
+            )
+        else:
+            internal_timing.update(
+                {
+                    "marked_target_cpu_ms": process.get("target_cpu_ms"),
+                    "marked_target_wall_ms": process.get("target_wall_ms"),
+                }
+            )
+        samples.append(
+            {
+                "variant": variant,
+                "sample_index": sample_index,
+                "success": sample_success,
+                "timeout": sample_timeout,
+                "status": sample_status,
+                "target_cpu_ms": target_cpu_ms,
+                "target_wall_ms": target_wall_ms,
+                "process_wall_ms": (
+                    process.get("process_wall_ms") if not paired else None
+                ),
+                "timing_scope": _TIMING_SCOPES[request.operation],
+                "wall_clock": "julia_time_ns_monotonic",
+                "cpu_clock": "clock_gettime_process_cpu",
+                "internal_timing": internal_timing,
+                "diagnostics": (
+                    {"results_agree": results_agree} if paired else {}
+                ),
+            }
+        )
+    return samples
 
 
 class HeckeBackend(BackendAdapter):
@@ -616,10 +760,17 @@ readline(stdin)
         values = parse_key_values(process.get("stdout", ""))
         result = _result(request, values)
         proven = parse_bool(values, "proof_complete") is True
+        paired = request.jit_repetitions == 1
+        results_agree = (
+            parse_bool(values, "jit_results_agree") is True
+            if paired
+            else True
+        )
         success = (
             process_state_is_valid(process)
             and process["success"]
             and _complete(request, result, proven)
+            and results_agree
         )
         if request.operation == "class_unit_proven":
             proof = {
@@ -643,24 +794,23 @@ readline(stdin)
             }
         marked_target_cpu_ms = process.get("target_cpu_ms")
         marked_target_wall_ms = process.get("target_wall_ms")
-        internal_target_cpu_ms = parse_float(
-            values, "internal_target_cpu_ms"
+        target_cpu_ms = (
+            None
+            if paired
+            else parse_float(values, "internal_target_cpu_ms")
         )
-        internal_target_wall_ms = parse_float(
-            values, "internal_target_wall_ms"
+        target_wall_ms = (
+            None
+            if paired
+            else parse_float(values, "internal_target_wall_ms")
         )
-        target_cpu_ms = internal_target_cpu_ms
-        target_wall_ms = internal_target_wall_ms
         timing = {
             "algorithm_clock": "clock_gettime_process_cpu",
-            "wall_clock": "julia_time_ns_wall",
-            "component_clock": "julia_time_ns_wall",
-            "scope": (
-                "field_setup_through_result"
-                if request.operation in {"class_unit_proven", "maximal_order"}
-                else "named_operation_only"
-            ),
-            "warmup_excluded": True,
+            "wall_clock": "julia_time_ns_monotonic",
+            "component_clock": "julia_time_ns_monotonic",
+            "scope": _TIMING_SCOPES[request.operation],
+            "preparation_excluded": True,
+            "jit_pair": paired,
             "target_cpu_ms": target_cpu_ms,
             "target_wall_ms": target_wall_ms,
             "marked_target_cpu_ms": marked_target_cpu_ms,
@@ -668,11 +818,31 @@ readline(stdin)
             "marked_process_affinity": process.get("effective_affinity"),
             "cpu_launcher_executable": process.get("launcher_executable"),
             "cpu_launcher_sha256": process.get("launcher_executable_sha256"),
-            "components_ms": _components(request, values),
+            "components_ms": (
+                {}
+                if paired
+                else _components(request, values)
+            ),
         }
+        if request.operation == "class_unit_proven":
+            timing.update(
+                {
+                    "class_unit_cache_policy": _CLASS_UNIT_CACHE_POLICY,
+                    "cross_sample_mathematical_cache_reuse": False,
+                }
+            )
         error = process.get("error")
+        if not success and error is None and paired and not results_agree:
+            error = "Hecke first-call and repeat-call results disagreed"
         if not success and error is None:
             error = "Hecke operation failed or returned incomplete output"
+        timing_samples = _timing_sample_payloads(
+            request,
+            values,
+            process,
+            observation_success=success,
+            results_agree=results_agree,
+        )
         payload: dict[str, Any] = {
             "engine": self.name,
             "algorithm": "external",
@@ -691,6 +861,7 @@ readline(stdin)
             "result": result,
             "proof": proof,
             "timing": timing,
+            "timing_samples": timing_samples,
         }
         if not success:
             payload["diagnostics"] = {

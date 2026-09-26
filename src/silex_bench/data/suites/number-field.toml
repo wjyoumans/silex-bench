@@ -17,4 +17,3 @@ sunit = "../corpora/sunit_fields.json"
 
 [reports]
 primary_clock = "target_wall_ns"
-speedup = "baseline_over_candidate"

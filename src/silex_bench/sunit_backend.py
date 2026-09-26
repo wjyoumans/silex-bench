@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import sys
+import time
 from pathlib import Path
 from typing import Any, cast
 
@@ -1844,6 +1845,7 @@ def run_pari(args: argparse.Namespace, row: dict[str, Any]) -> dict[str, Any]:
             "failure_stage": "engine_provenance",
             "failure_reason": f"PARI executable not found: {requested_gp}",
         }
+    deadline = time.monotonic() + float(args.timeout)
     version_process = run_process(
         [gp, "--version-short"],
         timeout=args.timeout,
@@ -1999,9 +2001,22 @@ print("mixed_verified=", mixed_verified);
 print("outside_rejected=", outside_rejected);
 quit
 """
+    remaining_timeout = deadline - time.monotonic()
+    if remaining_timeout <= 0.0:
+        return {
+            "engine": "pari",
+            "engine_identity": identity,
+            "available": True,
+            "success": False,
+            "timeout": True,
+            "failure_stage": "observation_deadline",
+            "failure_reason": (
+                "PARI observation deadline exhausted before target execution"
+            ),
+        }
     process = run_process(
         [gp, "-q"],
-        timeout=args.timeout,
+        timeout=remaining_timeout,
         stdin=program,
         **(
             {"cpu": args.cpu}
@@ -2369,7 +2384,7 @@ silex_compare_sunit(f)
 """
     process = run_process(
         [*julia_command(julia, project), "-e", code],
-        timeout=max(args.timeout, 30.0),
+        timeout=args.timeout,
         env=environment,
         **(
             {"cpu": args.cpu}

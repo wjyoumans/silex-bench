@@ -10,15 +10,23 @@ decimal strings.
 - **Silex** invokes the maintained `silex-class-unit-instance` adapter in
   proven mode. A successful observation must publish the final result and
   completed certification, class-group, unit-group, and regulator proof states.
-- **PARI/GP** uses `bnfinit(P, 1)` followed by a checked `bnfcertify`. The
+- **PARI/GP** prepares `nf = nfinit(P)` before timing, then times
+  `bnfinit(nf, 1)` followed by a checked `bnfcertify`. The
   implementation lives in PARI's `src/basemath/buch2.c` and `buch3.c`. The
   adapter reads `no`, `cyc`, `fu`, `disc`, and `r1`, records the selected
   executable and observed version, and validates optional version/source pins
   when configured. Publication export requires the stronger source identity.
-- **Hecke/OSCAR** constructs an uncached field and calls the non-GRH
-  `class_group(...; GRH=false, redo=true)` and `unit_group(...; GRH=false)`
-  routes in Hecke's `src/NumFieldOrd/NfOrd/Clgp.jl`. It uses the active Julia
-  environment unless a project override is configured.
+- **Hecke/OSCAR** constructs uncached fields and LLL-reduced maximal orders
+  before timing and calls the non-GRH
+  `class_group(...; GRH=false, redo=true)` route in Hecke's
+  `src/NumFieldOrd/NfOrd/Clgp.jl`. The following `unit_group` lookup reads the
+  shared class/unit result created within that same sample; fresh independently
+  prepared orders prevent reuse across timing samples. It uses the active Julia
+  environment unless a project override is configured. Because Julia is JIT
+  compiled, profiles with `jit_repetitions = 1` record a `first_call` and
+  `repeat_call` in the same process. The calls use independently prepared
+  objects and prevent cross-sample mathematical-cache reuse; reports keep both
+  timings as distinct series. Other profiles record one `standard` sample.
 - **Magma** calls `ClassGroup(O : Proof := "Full")` and
   `UnitGroup(O : GRH := false)`, matching the installed handbook contracts.
 
@@ -50,14 +58,23 @@ trusted local dependencies. Sealed executables, process groups, subreaping,
 and cleanup improve lifecycle integrity but do not isolate malicious same-UID
 programs.
 
-The external comparison clock is the supervisor's marked target wall interval:
-it begins when the target command is dispatched after optional preparation and
-ends at the target-done marker. It includes phase handoff, command parsing,
-marker I/O, and small post-operation audit work; it excludes process startup,
-warmup, and final publication. Internal CPU and wall clocks are retained as
-diagnostic evidence, not silently substituted into cross-engine ratios.
-Integrated S-unit comparisons use their whole-process wall envelope and label
-that different scope explicitly.
+The primary ordinary comparison clock is each backend's internal wall
+interval around the exact target operation. For class and unit groups, every
+adapter constructs the field and maximal order before starting that interval;
+only the class-group and unit-group calls are timed. Result extraction,
+serialization, and correctness comparison happen afterward. The supervisor's
+nonce-bound ready/target markers independently audit those boundaries and
+enforce the observation deadline; its marked wall and CPU values remain in the
+sample diagnostics. Integrated S-unit comparisons use their supervisor-measured
+whole-process wall envelope and label that different scope and clock explicitly.
+
+Clock identities remain backend-specific: Silex uses `steady_clock`, Hecke
+uses Julia `time_ns`, PARI uses `getwalltime`, and Magma uses `Realtime`.
+PARI 2.17.3 implements its wall timer in `src/language/init.c` using
+`CLOCK_REALTIME` or `gettimeofday` where available; it is not a monotonic-clock
+guarantee. No monotonic guarantee is claimed for Magma `Realtime`. The
+supervisor's observation deadline uses a separate monotonic clock regardless
+of the selected backend timer.
 
 CPU-pinned Linux runs resolve `taskset` from the system default path, reject
 group/world-writable path components, execute a sealed byte snapshot, and
@@ -67,8 +84,9 @@ engine probes, source revisions and cleanliness, the materialized campaign,
 and the requested singleton affinity.
 
 Successful observations must carry exact Boolean lifecycle states,
-object-shaped result/proof/timing payloads, positive selected clocks, and a
-complete backend-specific engine identity. Workload validation occurs before
+object-shaped result/proof/timing payloads, nonnegative selected clocks, and a
+complete backend-specific engine identity. A zero from a coarse backend clock
+is retained but is not timing-eligible. Workload validation occurs before
 pairwise comparison. Pairwise agreement occurs before timing eligibility. No
-failure, malformed proof, disagreement, or missing clock can produce a
-performance ratio.
+failure, malformed proof, disagreement, missing clock, or nonpositive clock can
+enter an absolute-runtime summary.

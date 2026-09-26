@@ -102,7 +102,8 @@ Do not remove them to improve a summary.
 
 Reports publish absolute runtime summaries and plots, with separate series by
 backend, sample variant, timing scope, and wall clock. Ordinary workloads use
-the backend's internal monotonic target wall interval. For class and unit
+the backend's internal target wall interval, with the backend-specific clock
+guarantees described in [backend-contracts.md](backend-contracts.md). For class and unit
 groups, field and maximal-order construction precede the interval; class-group
 and unit-group calls are inside it; extraction and validation follow it.
 Nonce-bound target markers independently audit boundaries and enforce the

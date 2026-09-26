@@ -7,8 +7,14 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from silex_bench.backends.hecke import HeckeBackend
-from silex_bench.backends.magma import MagmaBackend
+from silex_bench.backends.hecke import (
+    HeckeBackend,
+    _programs as hecke_programs,
+)
+from silex_bench.backends.magma import (
+    MagmaBackend,
+    _program_parts as magma_programs,
+)
 from silex_bench.backends.pari import (
     PariBackend,
     _parse_invariants,
@@ -42,7 +48,10 @@ def field(identifier: str, constant: int) -> FieldSpec:
 
 
 def request(
-    *, warm: bool = True, operation: str = "ideal_multiply"
+    *,
+    warm: bool = True,
+    operation: str = "ideal_multiply",
+    jit_repetitions: int = 0,
 ) -> SampleRequest:
     return SampleRequest(
         field=field("target", -5),
@@ -51,6 +60,7 @@ def request(
         sample_index=0,
         warmup=field("warmup", 47) if warm else None,
         seed=7,
+        jit_repetitions=jit_repetitions,
     )
 
 
@@ -200,7 +210,7 @@ class ProgramTimingTests(unittest.TestCase):
                 self.assertIn('print("target_internal_wall_ms="', final)
                 self.assertIn('print("reported_threads="', final)
 
-        _, class_target, _ = pari_programs(
+        class_ready, class_target, class_final = pari_programs(
             SampleRequest(
                 field=field("target", -5),
                 operation="class_unit_proven",
@@ -210,13 +220,147 @@ class ProgramTimingTests(unittest.TestCase):
                 seed=7,
             )
         )
+        self.assertIn("P = x^2 - 5;", class_ready)
+        self.assertIn("nf = nfinit(P);", class_ready)
+        self.assertNotIn("nfinit", class_target.split("bnfinit(nf, 1)", 1)[0])
+        self.assertIn("b = bnfinit(nf, 1);", class_target)
+        self.assertNotIn("class_order", class_target)
+        self.assertIn('print("class_order="', class_final)
+        self.assertIn("b.r1 + b.r2 - 1", class_final)
+        self.assertNotIn("b.fu", class_final)
+
+    def test_external_programs_prepare_fields_before_class_unit_timing(self) -> None:
+        sample = class_unit_request()
+
+        pari_ready, pari_target, _ = pari_programs(sample)
+        self.assertLess(pari_ready.index("nf = nfinit(P);"), pari_ready.index("READY"))
+        self.assertNotIn("nfinit(P)", pari_target)
+        self.assertIn("bnfinit(nf, 1)", pari_target)
+
+        magma_ready, magma_target, magma_final = magma_programs(sample)
+        self.assertIn("NumberField(f_target)", magma_ready)
+        self.assertIn("O_target := MaximalOrder(K_target);", magma_ready)
+        self.assertNotIn("NumberField", magma_target)
+        self.assertNotIn("MaximalOrder", magma_target)
+        self.assertIn("ClassGroup(O_target", magma_target)
+        self.assertIn("UnitGroup(O_target", magma_target)
+        self.assertNotIn("class_order", magma_target)
+        self.assertIn('printf "class_order=', magma_final)
+
+        hecke_ready, hecke_target, hecke_final = hecke_programs(sample)
+        self.assertIn("target_K, target_a = bench_field(P)", hecke_ready)
+        self.assertIn("target_O = lll(maximal_order(target_K))", hecke_ready)
+        self.assertNotIn("bench_field", hecke_target)
+        self.assertNotIn("maximal_order", hecke_target)
+        self.assertIn("target_C, target_mC = class_group(", hecke_target)
+        self.assertIn(
+            "target_O; GRH = false, redo = true, do_lll = false",
+            hecke_target,
+        )
+        self.assertNotIn("class_order", hecke_target)
+        self.assertIn('println("class_order="', hecke_final)
+        self.assertIn(
+            "target_signature[1] + target_signature[2] - 1",
+            hecke_final,
+        )
+        self.assertNotIn("rank(target_U)", hecke_final)
+
+    def test_hecke_jit_pair_uses_fresh_uncached_inputs_and_forced_recomputation(
+        self,
+    ) -> None:
+        sample = SampleRequest(
+            field=field("target", -5),
+            operation="class_unit_proven",
+            sample_kind="cold_process",
+            sample_index=0,
+            warmup=field("ignored_warmup", 47),
+            seed=7,
+            jit_repetitions=1,
+        )
+
+        ready, target, final = hecke_programs(sample)
+
+        self.assertNotIn("47", ready)
+        self.assertIn("first_K, first_a = bench_field(P)", ready)
+        self.assertIn("repeat_K, repeat_a = bench_field(P)", ready)
+        self.assertIn("first_O = lll(maximal_order(first_K))", ready)
+        self.assertIn("repeat_O = lll(maximal_order(repeat_K))", ready)
+        self.assertEqual(target.count("redo = true, do_lll = false"), 2)
+        self.assertNotIn("bench_field", target)
+        self.assertNotIn("maximal_order", target)
+        self.assertIn('println("first_internal_target_wall_ms="', target)
+        self.assertIn('println("repeat_internal_target_wall_ms="', target)
         self.assertLess(
-            class_target.index("P = x^2 - 5;"),
-            class_target.index("target_cpu_start_ms ="),
+            target.index("repeat_internal_target_wall_ms"),
+            target.index("__SILEX_BENCH_HECKE_TARGET_DONE__"),
+        )
+        self.assertIn("jit_results_agree =", final)
+        self.assertIn('println("jit_results_agree="', final)
+
+    def test_alternate_warmup_fields_are_not_emitted_by_external_programs(self) -> None:
+        sample = request(warm=True)
+        for backend, parts in (
+            ("pari", pari_programs(sample)),
+            ("hecke", hecke_programs(sample)),
+            ("magma", magma_programs(sample)),
+        ):
+            with self.subTest(backend=backend):
+                self.assertNotIn("47", "\n".join(parts))
+
+    def test_square_inputs_and_root_verification_stay_outside_timing(self) -> None:
+        sample = request(warm=True, operation="element_square_root")
+
+        pari_ready, pari_target, pari_final = pari_programs(sample)
+        self.assertIn("square_base = nfalgtobasis(nf, x + 1);", pari_ready)
+        self.assertIn(
+            "square_target = nfeltmul(nf, square_base, square_base);",
+            pari_ready,
+        )
+        self.assertNotIn("square_base", pari_target)
+        self.assertIn("nfeltissquare(nf, square_target, &square_root)", pari_target)
+        self.assertNotIn("nfeltmul", pari_target)
+        self.assertIn("nfeltmul(nf, square_root, square_root)", pari_final)
+        self.assertIn("== square_target", pari_final)
+        self.assertNotIn("nfalgtobasis", pari_final)
+
+        magma_ready, magma_target, magma_final = magma_programs(sample)
+        self.assertIn("square_target := (K_target!1 + a_target)^2;", magma_ready)
+        self.assertNotIn("^2", magma_target)
+        self.assertIn("IsSquare(square_target)", magma_target)
+        self.assertNotIn("root_verified", magma_target)
+        self.assertIn("root_target^2 eq square_target", magma_final)
+
+        hecke_ready, hecke_target, hecke_final = hecke_programs(sample)
+        self.assertIn("target_square = (target_K(1) + target_a)^2", hecke_ready)
+        self.assertNotIn("^2", hecke_target)
+        self.assertIn("is_square_with_sqrt(target_square)", hecke_target)
+        self.assertNotIn("root_verified", hecke_target)
+        self.assertIn(
+            "target_square_root^2 == target_square", hecke_final
         )
 
 
 class AdapterTimingTests(unittest.TestCase):
+    def test_silex_probe_is_reused_within_one_campaign_adapter(self) -> None:
+        backend = SilexBackend()
+        payload = {
+            "engine": "silex",
+            "available": True,
+            "success": True,
+            "timeout": False,
+            "status": "ok",
+            "error": None,
+            "engine_identity": {"engine": "silex"},
+        }
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.object(
+            backend, "_probe_uncached", return_value=payload
+        ) as uncached:
+            first = backend.probe(context(Path(temporary)))
+            first["available"] = False
+            second = backend.probe(context(Path(temporary)))
+        self.assertEqual(uncached.call_count, 1)
+        self.assertTrue(second["available"])
+
     def assert_persistable_probe(
         self,
         probe: dict[str, object],
@@ -1124,6 +1268,112 @@ class AdapterTimingTests(unittest.TestCase):
         )
         self.assertEqual(run.call_args.kwargs["timeout"], 10.0)
 
+    def test_hecke_jit_pair_emits_independent_first_and_repeat_samples(self) -> None:
+        backend = HeckeBackend()
+        backend._probe = {
+            "engine": "hecke",
+            "available": True,
+            "engine_identity": {
+                "executable": "/usr/bin/julia",
+                "project": None,
+            },
+        }
+        raw = marked_result(
+            "first_internal_target_cpu_ms=1\n"
+            "first_internal_target_wall_ms=2\n"
+            "first_component_ideal_multiply_ms=2\n"
+            "repeat_internal_target_cpu_ms=0.5\n"
+            "repeat_internal_target_wall_ms=0.75\n"
+            "repeat_component_ideal_multiply_ms=0.75\n"
+            "jit_results_agree=true\n"
+            "ideal_norm=36\n"
+        )
+        with tempfile.TemporaryDirectory() as temporary, mock.patch(
+            "silex_bench.backends.hecke.run_marked_process",
+            return_value=raw,
+        ):
+            payload = backend.run(
+                request(warm=True, jit_repetitions=1),
+                context(Path(temporary)),
+            )
+
+        self.assertTrue(payload["success"])
+        self.assertIsNone(payload["target_cpu_ms"])
+        self.assertIsNone(payload["target_wall_ms"])
+        self.assertEqual(
+            [sample["variant"] for sample in payload["timing_samples"]],
+            ["first_call", "repeat_call"],
+        )
+        self.assertEqual(
+            [sample["target_wall_ms"] for sample in payload["timing_samples"]],
+            [2.0, 0.75],
+        )
+        self.assertEqual(
+            [sample["status"] for sample in payload["timing_samples"]],
+            ["ok", "ok"],
+        )
+        self.assertTrue(all(sample["success"] for sample in payload["timing_samples"]))
+        self.assertTrue(
+            all(
+                sample["timing_scope"] == "ideal_multiplication_only"
+                for sample in payload["timing_samples"]
+            )
+        )
+        self.assertTrue(
+            all(
+                sample["diagnostics"]["results_agree"] is True
+                for sample in payload["timing_samples"]
+            )
+        )
+
+    def test_hecke_jit_pair_rejects_disagreeing_results(self) -> None:
+        backend = HeckeBackend()
+        backend._probe = {
+            "engine": "hecke",
+            "available": True,
+            "engine_identity": {
+                "executable": "/usr/bin/julia",
+                "project": None,
+            },
+        }
+        raw = marked_result(
+            "first_internal_target_cpu_ms=1\n"
+            "first_internal_target_wall_ms=2\n"
+            "first_component_ideal_multiply_ms=2\n"
+            "repeat_internal_target_cpu_ms=0.5\n"
+            "repeat_internal_target_wall_ms=0.75\n"
+            "repeat_component_ideal_multiply_ms=0.75\n"
+            "jit_results_agree=false\n"
+            "ideal_norm=36\n"
+        )
+        with tempfile.TemporaryDirectory() as temporary, mock.patch(
+            "silex_bench.backends.hecke.run_marked_process",
+            return_value=raw,
+        ):
+            payload = backend.run(
+                request(warm=True, jit_repetitions=1),
+                context(Path(temporary)),
+            )
+
+        self.assertFalse(payload["success"])
+        self.assertEqual(payload["status"], "compute_error")
+        self.assertIn("results disagreed", payload["error"])
+        self.assertTrue(
+            all(not sample["success"] for sample in payload["timing_samples"])
+        )
+        self.assertTrue(
+            all(
+                sample["status"] == "compute_error"
+                for sample in payload["timing_samples"]
+            )
+        )
+        self.assertTrue(
+            all(
+                sample["diagnostics"]["results_agree"] is False
+                for sample in payload["timing_samples"]
+            )
+        )
+
     def test_external_adapters_reject_mistyped_process_success(self) -> None:
         cases = (
             (
@@ -1236,6 +1486,10 @@ class AdapterTimingTests(unittest.TestCase):
             payload["timing"]["algorithm_clock"], "std_clock_process_cpu"
         )
         self.assertEqual(payload["timing"]["wall_clock"], "steady_clock")
+        self.assertEqual(payload["timing"]["scope"], "ideal_multiplication_only")
+        self.assertEqual(
+            payload["timing"]["native_scope"], "ideal_multiplication_only"
+        )
         self.assertEqual(payload["timing"]["target_cpu_ms"], 0.0)
         self.assertEqual(payload["timing"]["target_wall_ms"], 0.25)
         self.assertEqual(
@@ -1252,7 +1506,63 @@ class AdapterTimingTests(unittest.TestCase):
             },
         )
         self.assertIn("--marked-protocol", run.call_args.args[0])
+        self.assertEqual(run.call_args.kwargs["ready_input"], "")
+        self.assertNotIn("--warmup-coeffs", run.call_args.args[0])
         self.assertEqual(run.call_args.kwargs["timeout"], 10.0)
+
+    def test_silex_class_unit_starts_preparation_without_a_ready_command(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, mock.patch(
+            "silex_bench.backends.silex.run_marked_process",
+            return_value=marked_result(json.dumps(class_unit_payload())),
+        ) as run:
+            sample = class_unit_request()
+            sample = SampleRequest(
+                field=sample.field,
+                operation=sample.operation,
+                sample_kind=sample.sample_kind,
+                sample_index=sample.sample_index,
+                warmup=field("ignored_warmup", 47),
+                seed=sample.seed,
+            )
+            payload = SilexBackend()._run_class_unit(
+                sample, context(Path(temporary)), {}
+            )
+
+        self.assertTrue(payload["success"])
+        self.assertEqual(run.call_args.kwargs["ready_input"], "")
+        self.assertNotIn("--warmup-coeffs", run.call_args.args[0])
+
+    def test_silex_native_failure_envelopes_are_not_masked_by_success_schema(self) -> None:
+        cases = (
+            ("class_unit", "_run_class_unit", class_unit_request()),
+            ("operation", "_run_operation", request(warm=False)),
+        )
+        native_failure = {
+            "success": False,
+            "timeout": False,
+            "failure_stage": "target_computation",
+            "failure_reason": "native target rejected the input",
+            "error": "native target rejected the input",
+        }
+        for label, method_name, sample in cases:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
+                process = marked_result(json.dumps(native_failure))
+                process["success"] = False
+                with mock.patch(
+                    "silex_bench.backends.silex.run_marked_process",
+                    return_value=process,
+                ):
+                    payload = getattr(SilexBackend(), method_name)(
+                        sample, context(Path(temporary)), {}
+                    )
+
+            self.assertFalse(payload["success"])
+            self.assertEqual(payload["status"], "compute_error")
+            self.assertEqual(payload["failure_stage"], "target_computation")
+            self.assertEqual(
+                payload["failure_reason"], "native target rejected the input"
+            )
+            self.assertIn("native target rejected", payload["error"])
 
     def test_silex_operation_rejects_duplicate_json_fields(self) -> None:
         native = {

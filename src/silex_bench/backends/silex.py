@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import stat
@@ -38,6 +39,12 @@ _READY_MARKER = "__SILEX_BENCH_SILEX_READY__"
 _TARGET_MARKER = "__SILEX_BENCH_SILEX_TARGET_DONE__"
 _REQUESTED_THREADS = 1
 _THREAD_COUNT_SOURCE = "silex_flint_get_num_threads"
+_TIMING_SCOPES = {
+    "class_unit_proven": "class_and_unit_group_only",
+    "maximal_order": "maximal_order_only",
+    "ideal_multiply": "ideal_multiplication_only",
+    "element_square_root": "number_field_element_is_square_only",
+}
 SILEX_BENCHMARK_CMAKE_CACHE_REQUIREMENTS = (
     ("CMAKE_BUILD_TYPE:STRING", "Release"),
     ("SILEX_BUILD_BENCHMARK_ADAPTERS:BOOL", "ON"),
@@ -102,8 +109,107 @@ def _native_payload_type_error(
     return None
 
 
+def _native_failure_payload(
+    process: dict[str, Any],
+    identity: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    operation: str,
+    algorithm: str,
+) -> dict[str, Any]:
+    timeout = process.get("timeout") is True or payload.get("timeout") is True
+    failure_reason = nonempty_diagnostic(
+        payload.get("failure_reason"),
+        payload.get("error"),
+        process.get("error"),
+        process.get("stderr"),
+        fallback=f"Silex {operation} computation failed",
+    )
+    failure_stage = payload.get("failure_stage")
+    if type(failure_stage) is not str or not failure_stage.strip():
+        failure_stage = "native_execution"
+
+    if operation == "class_unit_proven":
+        native_timing = payload.get("measurement_timing")
+        native_timing = native_timing if isinstance(native_timing, dict) else {}
+        timing = {
+            **native_timing,
+            "native_scope": native_timing.get(
+                "scope", native_timing.get("algorithm_scope")
+            ),
+            "scope": _TIMING_SCOPES[operation],
+            "preparation_excluded": True,
+            "component_timing_ms": (
+                payload.get("component_timing_ms")
+                if isinstance(payload.get("component_timing_ms"), dict)
+                else {}
+            ),
+        }
+        proof = {
+            "certification_status": payload.get("certification_status"),
+            "class_group_proof_status": payload.get("class_group_proof_status"),
+            "unit_group_proof_status": payload.get("unit_group_proof_status"),
+            "regulator_proof_status": payload.get("regulator_proof_status"),
+            "final_result_published": False,
+        }
+    else:
+        clocks = payload.get("timing_clock")
+        clocks = clocks if isinstance(clocks, dict) else {}
+        timing = {
+            "native_scope": payload.get("timing_scope"),
+            "scope": _TIMING_SCOPES[operation],
+            "algorithm_clock": clocks.get("cpu"),
+            "wall_clock": clocks.get("wall"),
+            "target_cpu_ms": payload.get("target_cpu_ms"),
+            "target_wall_ms": payload.get("target_wall_ms"),
+            "source": payload.get("source"),
+        }
+        proof = {}
+    timing.update(
+        {
+            "preparation_excluded": True,
+            "marked_target_cpu_ms": process.get("target_cpu_ms"),
+            "marked_target_wall_ms": process.get("target_wall_ms"),
+            "marked_process_affinity": process.get("effective_affinity"),
+            "cpu_launcher_executable": process.get("launcher_executable"),
+            "cpu_launcher_sha256": process.get("launcher_executable_sha256"),
+        }
+    )
+    return {
+        "engine": "silex",
+        "algorithm": algorithm,
+        "available": process.get("available") is True,
+        "success": False,
+        "timeout": timeout,
+        "status": "timeout" if timeout else "compute_error",
+        "error": failure_reason,
+        "target_cpu_ms": payload.get("target_cpu_ms"),
+        "target_wall_ms": payload.get("target_wall_ms"),
+        "process_wall_ms": process.get("process_wall_ms"),
+        "engine_identity": identity,
+        "result": {},
+        "proof": proof,
+        "thread_count": _thread_count(payload),
+        "failure_stage": failure_stage,
+        "failure_reason": failure_reason,
+        "equation_order_index": payload.get("equation_order_index"),
+        "timing": timing,
+        "cmd": process.get("cmd"),
+        "stdout": process.get("stdout", ""),
+        "stderr": process.get("stderr", ""),
+        "diagnostics": {
+            "stdout": process.get("stdout", ""),
+            "stderr": process.get("stderr", ""),
+            "cmd": process.get("cmd"),
+        },
+    }
+
+
 class SilexBackend(BackendAdapter):
     name = "silex"
+
+    def __init__(self) -> None:
+        self._probe: dict[str, Any] | None = None
 
     @staticmethod
     def _executables(context: BackendContext) -> tuple[Path, Path]:
@@ -148,6 +254,11 @@ class SilexBackend(BackendAdapter):
         return "; ".join(mismatches) if mismatches else None
 
     def probe(self, context: BackendContext) -> dict[str, Any]:
+        if self._probe is None:
+            self._probe = self._probe_uncached(context)
+        return copy.deepcopy(self._probe)
+
+    def _probe_uncached(self, context: BackendContext) -> dict[str, Any]:
         for label, root in (
             ("source", context.silex_source),
             ("build", context.silex_build_dir),
@@ -257,16 +368,9 @@ class SilexBackend(BackendAdapter):
             "--mode",
             "proven",
         ]
-        if request.warmup is not None:
-            cmd.extend(
-                [
-                    "--warmup-coeffs",
-                    coeffs_arg(request.warmup.coefficients_low_to_high),
-                ]
-            )
         process = run_marked_process(
             cmd,
-            ready_input="prepare\n",
+            ready_input="",
             target_input=TARGET_NONCE_PLACEHOLDER + "\n",
             final_input="result\n",
             ready_marker=_READY_MARKER,
@@ -288,6 +392,21 @@ class SilexBackend(BackendAdapter):
         except (json.JSONDecodeError, ValueError) as exc:
             return self._process_failure(
                 process, identity, f"invalid Silex class/unit JSON: {exc}"
+            )
+        envelope_error = _native_payload_type_error(
+            payload,
+            required_booleans=("success",),
+            optional_booleans=("timeout",),
+        )
+        if envelope_error is not None:
+            return self._process_failure(process, identity, envelope_error)
+        if payload["success"] is False:
+            return _native_failure_payload(
+                process,
+                identity,
+                payload,
+                operation=request.operation,
+                algorithm=context.silex_backend,
             )
         payload_error = _native_payload_type_error(
             payload,
@@ -361,6 +480,12 @@ class SilexBackend(BackendAdapter):
             timing = {}
         timing = {
             **timing,
+            "native_scope": timing.get(
+                "scope", timing.get("algorithm_scope")
+            ),
+            "scope": _TIMING_SCOPES[request.operation],
+            "wall_clock": timing.get("wall_clock", timing.get("component_clock")),
+            "preparation_excluded": True,
             "marked_target_cpu_ms": process.get("target_cpu_ms"),
             "marked_target_wall_ms": process.get("target_wall_ms"),
             "marked_process_affinity": process.get("effective_affinity"),
@@ -454,16 +579,9 @@ class SilexBackend(BackendAdapter):
             "--operation",
             request.operation,
         ]
-        if request.warmup is not None:
-            cmd.extend(
-                [
-                    "--warmup-coeffs",
-                    coeffs_arg(request.warmup.coefficients_low_to_high),
-                ]
-            )
         process = run_marked_process(
             cmd,
-            ready_input="prepare\n",
+            ready_input="",
             target_input=TARGET_NONCE_PLACEHOLDER + "\n",
             final_input="result\n",
             ready_marker=_READY_MARKER,
@@ -485,6 +603,21 @@ class SilexBackend(BackendAdapter):
         except (json.JSONDecodeError, ValueError) as exc:
             return self._process_failure(
                 process, identity, f"invalid Silex operation JSON: {exc}"
+            )
+        envelope_error = _native_payload_type_error(
+            payload,
+            required_booleans=("success",),
+            optional_booleans=("timeout",),
+        )
+        if envelope_error is not None:
+            return self._process_failure(process, identity, envelope_error)
+        if payload["success"] is False:
+            return _native_failure_payload(
+                process,
+                identity,
+                payload,
+                operation=request.operation,
+                algorithm=context.silex_backend,
             )
         payload_error = _native_payload_type_error(
             payload,
@@ -577,7 +710,8 @@ class SilexBackend(BackendAdapter):
             "proof": {},
             "thread_count": thread_count,
             "timing": {
-                "algorithm_scope": payload.get("timing_scope"),
+                "native_scope": payload.get("timing_scope"),
+                "scope": _TIMING_SCOPES[request.operation],
                 "algorithm_clock": payload.get("timing_clock", {}).get("cpu"),
                 "wall_clock": payload.get("timing_clock", {}).get("wall"),
                 "target_cpu_ms": payload.get("target_cpu_ms"),
@@ -588,7 +722,7 @@ class SilexBackend(BackendAdapter):
                 "cpu_launcher_executable": process.get("launcher_executable"),
                 "cpu_launcher_sha256": process.get("launcher_executable_sha256"),
                 "source": payload.get("source"),
-                "warmup": payload.get("warmup"),
+                "preparation_excluded": True,
             },
             "cmd": process.get("cmd"),
             "stdout": process.get("stdout", ""),

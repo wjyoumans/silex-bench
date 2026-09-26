@@ -9,7 +9,10 @@ description = "Extensible correctness-gated comparative benchmarks for Silex"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "GPL-3.0-or-later"
-license-files = ["LICENSE", "NOTICE.md", "THIRD_PARTY_NOTICES.md"]
+license-files = [
+  "LICENSE", "NOTICE.md", "THIRD_PARTY_NOTICES.md",
+  "LICENSES/Apache-2.0.txt", "LICENSES/Silex-Devtools-NOTICE.md",
+]
 authors = [{name = "William Youmans"}]
 classifiers = [
   "Operating System :: POSIX :: Linux",

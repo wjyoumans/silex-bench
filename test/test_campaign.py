@@ -8,28 +8,26 @@ import sys
 import tempfile
 import types
 import unittest
-from dataclasses import dataclass
 from pathlib import Path
 from unittest import mock
 
 import silex_bench.reporting as reporting
+from silex_bench_test_support import fake_registry
 from silex_bench.campaign import build_plan, invocation_context, run_campaign
 from silex_bench.cli import _resume_plan, main
 from silex_bench.configuration import (
+    CONFIG_SCHEMA_VERSION,
     ProfileConfig,
     RunOverrides,
     SuiteConfig,
     ToolConfig,
+    effective_execution,
     load_profile,
     load_suite,
     load_tools,
 )
 from silex_bench.contracts import (
     CAMPAIGN_SCHEMA_VERSION,
-    BackendDescriptor,
-    EngineInfo,
-    Observation,
-    ObservationStatus,
     Registry,
 )
 from silex_bench.ledger import RunLedger
@@ -42,10 +40,11 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ConfigurationTests(unittest.TestCase):
-    def test_checked_in_quick_plan_uses_campaign_schema_v1(self) -> None:
+    def test_checked_in_quick_plan_separates_config_and_campaign_schemas(self) -> None:
         suite = load_suite(builtin_path("suites", "number-field"))
         profile = load_profile(builtin_path("profiles", "quick"))
-        self.assertEqual(CAMPAIGN_SCHEMA_VERSION, 1)
+        self.assertEqual(CONFIG_SCHEMA_VERSION, 1)
+        self.assertEqual(CAMPAIGN_SCHEMA_VERSION, 2)
         self.assertEqual(suite.id, "number-field")
         self.assertEqual(profile.id, "quick")
         self.assertEqual(suite.required_pairs, (("silex", "pari"),))
@@ -55,7 +54,7 @@ class ConfigurationTests(unittest.TestCase):
             path = Path(directory) / "profile.toml"
             path.write_text(
                 'schema_version = 1\nid = "bad"\ninclude_tags = []\n'
-                'exclude_tags = []\nrepetitions = 1\nwarmups = 0\n'
+                'exclude_tags = []\nrepetitions = 1\njit_repetitions = 0\n'
                 'timeout_seconds = 1\nthreads = 1\npublication = false\n'
                 'minimum_repetitions = 1\nrequire_clean_sources = false\n'
                 'surprise = true\n',
@@ -64,25 +63,43 @@ class ConfigurationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "unknown profile keys"):
                 load_profile(path)
 
-    def test_publication_profile_requires_nine_repetitions(self) -> None:
+    def test_publication_profile_requires_three_repetitions(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "profile.toml"
             path.write_text(
                 'schema_version = 1\nid = "bad"\ninclude_tags = []\n'
-                'exclude_tags = []\nrepetitions = 8\nwarmups = 0\n'
+                'exclude_tags = []\nrepetitions = 2\njit_repetitions = 0\n'
                 'timeout_seconds = 1\nthreads = 1\npublication = true\n'
-                'minimum_repetitions = 9\nrequire_clean_sources = true\n',
+                'minimum_repetitions = 3\nrequire_clean_sources = true\n',
                 encoding="utf-8",
             )
-            with self.assertRaisesRegex(ValueError, "at least nine"):
+            with self.assertRaisesRegex(ValueError, "at least three"):
                 load_profile(path)
+
+    def test_publication_profile_cannot_disable_clean_source_enforcement(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "profile.toml"
+            path.write_text(
+                'schema_version = 1\nid = "bad"\ninclude_tags = []\n'
+                'exclude_tags = []\nrepetitions = 3\njit_repetitions = 0\n'
+                'timeout_seconds = 1\nthreads = 1\npublication = true\n'
+                'minimum_repetitions = 3\nrequire_clean_sources = false\n',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "clean-source enforcement"):
+                load_profile(path)
+
+    def test_publication_repetition_override_cannot_drop_below_minimum(self) -> None:
+        profile = load_profile(builtin_path("profiles", "publication"))
+        with self.assertRaisesRegex(ValueError, "at least 3 repetitions"):
+            effective_execution(profile, RunOverrides(repetitions=1))
 
     def test_pre_release_campaign_config_is_rejected_without_rewrite(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "profile.toml"
             original = (
                 'schema_version = 4\nid = "stale"\ninclude_tags = []\n'
-                'exclude_tags = []\nrepetitions = 1\nwarmups = 0\n'
+                'exclude_tags = []\nrepetitions = 1\njit_repetitions = 0\n'
                 'timeout_seconds = 1\nthreads = 1\npublication = false\n'
                 'minimum_repetitions = 1\nrequire_clean_sources = false\n'
             ).encode()
@@ -133,7 +150,7 @@ class CampaignSchemaTests(unittest.TestCase):
             original_bytes = path.read_bytes()
             original_state = self._ledger_state(path)
 
-            with self.assertRaisesRegex(ValueError, "run ledger schema must be 1, got 4"):
+            with self.assertRaisesRegex(ValueError, "report-only.*got 4"):
                 RunLedger(run_dir, create=True)
 
             self.assertEqual(path.read_bytes(), original_bytes)
@@ -171,7 +188,7 @@ class CampaignSchemaTests(unittest.TestCase):
             original_state = self._ledger_state(path)
 
             with self.assertRaisesRegex(
-                ValueError, "campaign manifest schema_version must be 1"
+                ValueError, "campaign manifest schema_version must be 1 or 2"
             ):
                 generate_report(run_dir)
 
@@ -272,89 +289,6 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(payload["execution"]["timeout_seconds"], 180.0)
 
 
-@dataclass(frozen=True)
-class FakeImplementation:
-    backend: str
-    workload: str = MAXIMAL_ORDER
-    discriminant: str = "5"
-
-    def run(self, case, *, repetition, order_index, warmup, context, contract):
-        result = {"maximal_order_discriminant": self.discriminant}
-        validation = contract.validate_observation(case, self.backend, result, {})
-        elapsed = 10_000_000 if self.backend == "silex" else 20_000_000
-        return Observation(
-            case_key=case.key,
-            workload=self.workload,
-            backend=self.backend,
-            repetition=repetition,
-            order_index=order_index,
-            status=ObservationStatus.OK,
-            success=True,
-            timeout=False,
-            result=result,
-            proof={},
-            validation=validation,
-            target_wall_ns=elapsed,
-            process_wall_ns=elapsed + 1_000,
-            internal_timing={},
-            engine_identity={"engine": self.backend, "version": "test"},
-            command=(self.backend,),
-            stdout="",
-            stderr="",
-        )
-
-
-def fake_registry(
-    *, include_unavailable: bool = False, disagree: bool = False
-) -> Registry:
-    contract = NumberFieldContract(MAXIMAL_ORDER, "Maximal order")
-    descriptors = []
-    for name in ("silex", "pari"):
-        implementation = FakeImplementation(
-            name, discriminant="7" if disagree and name == "pari" else "5"
-        )
-
-        def probe(context, descriptor, *, backend=name):
-            return EngineInfo(
-                backend=backend,
-                display_name=backend,
-                available=True,
-                capabilities=(MAXIMAL_ORDER,),
-                identity={"engine": backend, "version": "test"},
-            )
-
-        descriptors.append(
-            BackendDescriptor(
-                id=name,
-                display_name=name,
-                implementations={MAXIMAL_ORDER: implementation},
-                probe_callback=probe,
-            )
-        )
-    if include_unavailable:
-        implementation = FakeImplementation("hecke")
-
-        def unavailable(context, descriptor):
-            return EngineInfo(
-                backend="hecke",
-                display_name="hecke",
-                available=False,
-                capabilities=(MAXIMAL_ORDER,),
-                identity={},
-                error="fixture unavailable",
-            )
-
-        descriptors.append(
-            BackendDescriptor(
-                id="hecke",
-                display_name="hecke",
-                implementations={MAXIMAL_ORDER: implementation},
-                probe_callback=unavailable,
-            )
-        )
-    return Registry([contract], descriptors)
-
-
 class ResumeLedgerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -396,7 +330,6 @@ class ResumeLedgerTests(unittest.TestCase):
                     f"number_fields = {json.dumps(str(corpus))}",
                     "[reports]",
                     'primary_clock = "target_wall_ns"',
-                    'speedup = "baseline_over_candidate"',
                     "",
                 )
             ),
@@ -412,7 +345,7 @@ class ResumeLedgerTests(unittest.TestCase):
                     'include_tags = ["quick"]',
                     "exclude_tags = []",
                     "repetitions = 1",
-                    "warmups = 0",
+                    "jit_repetitions = 0",
                     "timeout_seconds = 1",
                     "threads = 1",
                     "publication = false",
@@ -536,8 +469,9 @@ class CampaignTests(unittest.TestCase):
             description="",
             include_tags=("quick",),
             exclude_tags=(),
+            backend_exclusions=(),
             repetitions=2,
-            warmups=0,
+            jit_repetitions=0,
             timeout_seconds=1,
             budget_seconds=None,
             cpu=None,
@@ -561,16 +495,15 @@ class CampaignTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
-    def test_campaign_ledgers_agreement_and_paired_speedup(self) -> None:
+    def test_campaign_ledgers_correctness_and_raw_timings(self) -> None:
         run_dir = self.root / "run"
         snapshot = run_campaign(self.plan, run_dir)
         self.assertEqual(snapshot["state"], "complete")
         self.assertEqual(len(snapshot["observations"]), 4)
         self.assertEqual(len(snapshot["agreements"]), 2)
-        self.assertTrue(all(row["timing_eligible"] for row in snapshot["agreements"]))
-        self.assertTrue(
-            all(row["speedup_baseline_over_candidate"] == 2 for row in snapshot["agreements"])
-        )
+        self.assertTrue(all(row["success"] for row in snapshot["agreements"]))
+        self.assertEqual(len(snapshot["timing_samples"]), 4)
+        self.assertTrue(all(row["status"] == "ok" for row in snapshot["timing_samples"]))
         with RunLedger(run_dir) as ledger:
             self.assertEqual(ledger.state(), "complete")
 
@@ -585,6 +518,9 @@ class CampaignTests(unittest.TestCase):
         destination = Path(report["directory"])
         self.assertTrue((destination / "summary.json").is_file())
         self.assertTrue((destination / "observations.jsonl").is_file())
+        self.assertTrue((destination / "timing_samples.jsonl").is_file())
+        self.assertTrue((destination / "timing_samples.csv").is_file())
+        self.assertFalse((destination / "ratios.csv").exists())
         self.assertFalse(report["publication_eligible"])
         with self.assertRaisesRegex(ValueError, "publication export rejected"):
             generate_report(run_dir, publication=True)
@@ -818,7 +754,7 @@ class CampaignTests(unittest.TestCase):
             **{
                 **self.profile.__dict__,
                 "repetitions": 7,
-                "warmups": 1,
+                "jit_repetitions": 1,
                 "publication": True,
                 "minimum_repetitions": 7,
             }
@@ -834,11 +770,11 @@ class CampaignTests(unittest.TestCase):
         )
         self.assertFalse(plan.performance)
         self.assertEqual(plan.execution["repetitions"], 1)
-        self.assertEqual(plan.execution["warmups"], 0)
+        self.assertEqual(plan.execution["jit_repetitions"], 0)
         self.assertFalse(plan.execution["publication"])
         run_dir = self.root / "correctness-run"
         snapshot = run_campaign(plan, run_dir)
-        self.assertTrue(all(not row["timing_eligible"] for row in snapshot["agreements"]))
+        self.assertTrue(all(row["success"] for row in snapshot["agreements"]))
         report = generate_report(run_dir)
         summary = json.loads(
             (Path(report["directory"]) / "summary.json").read_text(encoding="utf-8")
@@ -867,10 +803,6 @@ class CampaignTests(unittest.TestCase):
         self.assertEqual({row["status"] for row in hecke}, {"unavailable"})
 
     def test_disagreement_is_never_admitted_to_timing_tables(self) -> None:
-        corpus = self.suite.corpora["number_fields"]
-        payload = json.loads(corpus.read_text(encoding="utf-8"))
-        payload["fields"][0].pop("maximal_order_discriminant")
-        corpus.write_text(json.dumps(payload), encoding="utf-8")
         plan = build_plan(
             self.root,
             self.suite,
@@ -888,7 +820,6 @@ class CampaignTests(unittest.TestCase):
             (Path(report["directory"]) / "summary.json").read_text(encoding="utf-8")
         )
         self.assertEqual(summary["timings"], [])
-        self.assertEqual(summary["ratios"], [])
 
 
 if __name__ == "__main__":

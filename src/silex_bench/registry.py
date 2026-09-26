@@ -6,10 +6,12 @@ import argparse
 import copy
 import os
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any
 
 from .backends import create_backend
+from .backends.base import BackendAdapter
 from .contracts import (
     BackendDescriptor,
     Case,
@@ -19,6 +21,7 @@ from .contracts import (
     Observation,
     ObservationStatus,
     Registry,
+    TimingSample,
     ValidationResult,
     WorkloadContract,
 )
@@ -50,6 +53,8 @@ def _legacy_context(
         primary_clock="marked_wall",
         environment=dict(context.environment),
         selected_operations=selected,
+        jit_repetitions=context.jit_repetitions,
+        timeout_source=context.timeout_source,
     )
 
 
@@ -97,6 +102,96 @@ def _status(payload: dict[str, Any]) -> ObservationStatus:
     return ObservationStatus.ERROR
 
 
+def _timing_samples(
+    payload: dict[str, Any],
+    *,
+    case: Case,
+    backend: str,
+    repetition: int,
+    context: InvocationContext,
+    default_scope: str,
+) -> tuple[TimingSample, ...]:
+    """Normalize adapter timing payloads at the campaign boundary."""
+
+    raw_samples = payload.get("timing_samples")
+    if not isinstance(raw_samples, list):
+        timing = payload.get("timing")
+        timing = timing if isinstance(timing, dict) else {}
+        raw_samples = [
+            {
+                "variant": "standard",
+                "sample_index": 0,
+                "success": payload.get("success") is True,
+                "timeout": payload.get("timeout") is True,
+                "target_cpu_ms": payload.get(
+                    "target_cpu_ms", timing.get("target_cpu_ms")
+                ),
+                "target_wall_ms": payload.get(
+                    "target_wall_ms", timing.get("target_wall_ms")
+                ),
+                "process_wall_ms": payload.get("process_wall_ms"),
+                "timing_scope": timing.get("scope", default_scope),
+                "wall_clock": timing.get("wall_clock"),
+                "cpu_clock": timing.get("algorithm_clock"),
+                "internal_timing": timing,
+                "diagnostics": payload.get("diagnostics", {}),
+            }
+        ]
+    samples: list[TimingSample] = []
+    for index, raw in enumerate(raw_samples):
+        if not isinstance(raw, dict):
+            continue
+        timeout = raw.get("timeout") is True
+        success = raw.get("success") is True and not timeout
+        status = (
+            ObservationStatus.OK
+            if success
+            else ObservationStatus.TIMEOUT
+            if timeout
+            else ObservationStatus.ERROR
+        )
+        internal = raw.get("internal_timing")
+        diagnostics = raw.get("diagnostics")
+        target_wall_ms = raw.get("target_wall_ms")
+        if target_wall_ms is None and default_scope == "whole_process":
+            target_wall_ms = raw.get("process_wall_ms")
+        samples.append(
+            TimingSample(
+                case_key=case.key,
+                workload=case.workload,
+                backend=backend,
+                repetition=repetition,
+                variant=str(raw.get("variant", "standard")),
+                sample_index=int(raw.get("sample_index", index)),
+                status=status,
+                timeout=timeout,
+                target_wall_ns=_milliseconds_to_ns(target_wall_ms),
+                target_cpu_ns=_milliseconds_to_ns(raw.get("target_cpu_ms")),
+                process_wall_ns=_milliseconds_to_ns(raw.get("process_wall_ms")),
+                timing_scope=str(raw.get("timing_scope") or default_scope),
+                effective_timeout_seconds=context.timeout_seconds,
+                timeout_source=context.timeout_source,
+                wall_clock=(
+                    str(raw["wall_clock"])
+                    if raw.get("wall_clock") is not None
+                    else None
+                ),
+                cpu_clock=(
+                    str(raw["cpu_clock"])
+                    if raw.get("cpu_clock") is not None
+                    else None
+                ),
+                internal_timing=copy.deepcopy(internal)
+                if isinstance(internal, dict)
+                else {},
+                diagnostics=copy.deepcopy(diagnostics)
+                if isinstance(diagnostics, dict)
+                else {},
+            )
+        )
+    return tuple(samples)
+
+
 def add_executable_digests(
     probe: dict[str, Any], *, selected_workloads: tuple[str, ...]
 ) -> dict[str, Any]:
@@ -134,6 +229,7 @@ def add_executable_digests(
 class NativeImplementation(ImplementationAdapter):
     backend: str
     workload: str
+    adapter: BackendAdapter
 
     def run(
         self,
@@ -145,17 +241,19 @@ class NativeImplementation(ImplementationAdapter):
         context: InvocationContext,
         contract: WorkloadContract,
     ) -> Observation:
-        adapter = create_backend(self.backend)
         request = SampleRequest(
             field=_field(case),
             operation=self.workload,
-            sample_kind="warm_algorithm" if warmup is not None else "cold_algorithm",
+            sample_kind="cold_algorithm",
             sample_index=repetition,
-            warmup=None if warmup is None else _field(warmup),
+            warmup=None,
             seed=0,
+            jit_repetitions=context.jit_repetitions,
         )
         try:
-            payload = adapter.run(request, _legacy_context(context, self.workload))
+            payload = self.adapter.run(
+                request, _legacy_context(context, self.workload)
+            )
         except Exception as exc:
             payload = {
                 "available": True,
@@ -175,6 +273,14 @@ class NativeImplementation(ImplementationAdapter):
             else ValidationResult(False, (str(payload.get("error") or "backend execution failed"),), {})
         )
         timing = payload.get("timing") if isinstance(payload.get("timing"), dict) else {}
+        samples = _timing_samples(
+            payload,
+            case=case,
+            backend=self.backend,
+            repetition=repetition,
+            context=context,
+            default_scope=contract.timing_scope,
+        )
         command = payload.get("cmd")
         return Observation(
             case_key=case.key,
@@ -202,6 +308,7 @@ class NativeImplementation(ImplementationAdapter):
             stdout=str(payload.get("stdout", "")),
             stderr=str(payload.get("stderr", "")),
             error=(None if payload.get("error") is None else str(payload.get("error"))),
+            timing_samples=samples,
         )
 
 
@@ -264,6 +371,32 @@ class SUnitImplementation(ImplementationAdapter):
         )
         process_ms = payload.get("process_wall_ms")
         command = ("integrated-sunit", self.backend, case.id)
+        timing = {
+            "scope": "whole_process",
+            "preparation_excluded": False,
+            "jit_policy": "not_applicable_integrated_whole_process",
+            "wall_clock": "python_perf_counter_monotonic",
+            "phase_timing_ms": payload.get("phase_timing_ms", {}),
+            "sunit_timing_ms": payload.get("sunit_timing_ms", {}),
+            "component_timing_ms": payload.get("component_timing_ms", {}),
+            "effective_affinity": payload.get("effective_affinity"),
+            "launcher_executable": payload.get("launcher_executable"),
+            "launcher_executable_sha256": payload.get(
+                "launcher_executable_sha256"
+            ),
+        }
+        samples = _timing_samples(
+            {
+                **payload,
+                "target_wall_ms": process_ms,
+                "timing": timing,
+            },
+            case=case,
+            backend=self.backend,
+            repetition=repetition,
+            context=context,
+            default_scope=contract.timing_scope,
+        )
         return Observation(
             case_key=case.key,
             workload=SUNIT,
@@ -278,18 +411,7 @@ class SUnitImplementation(ImplementationAdapter):
             validation=validation,
             target_wall_ns=_milliseconds_to_ns(process_ms),
             process_wall_ns=_milliseconds_to_ns(process_ms),
-            internal_timing={
-                "scope": "whole_process",
-                "warmup_policy": "not_applicable_whole_process",
-                "phase_timing_ms": payload.get("phase_timing_ms", {}),
-                "sunit_timing_ms": payload.get("sunit_timing_ms", {}),
-                "component_timing_ms": payload.get("component_timing_ms", {}),
-                "effective_affinity": payload.get("effective_affinity"),
-                "launcher_executable": payload.get("launcher_executable"),
-                "launcher_executable_sha256": payload.get(
-                    "launcher_executable_sha256"
-                ),
-            },
+            internal_timing=timing,
             engine_identity=copy.deepcopy(
                 payload.get("engine_identity")
                 if isinstance(payload.get("engine_identity"), dict)
@@ -303,6 +425,7 @@ class SUnitImplementation(ImplementationAdapter):
                 if payload.get("failure_reason") is None
                 else str(payload.get("failure_reason"))
             ),
+            timing_samples=samples,
         )
 
 
@@ -326,8 +449,12 @@ def _sunit_arguments(context: InvocationContext) -> argparse.Namespace:
     )
 
 
-def _probe(context: InvocationContext, descriptor: BackendDescriptor) -> EngineInfo:
-    adapter = create_backend(descriptor.id)
+def _probe(
+    context: InvocationContext,
+    descriptor: BackendDescriptor,
+    *,
+    adapter: BackendAdapter,
+) -> EngineInfo:
     selected_workloads = tuple(
         workload
         for workload in context.selected_workloads
@@ -367,8 +494,9 @@ def builtin_registry() -> Registry:
     }
     descriptors: list[BackendDescriptor] = []
     for backend in ("silex", "pari", "hecke", "magma"):
+        adapter = create_backend(backend)
         implementations: dict[str, ImplementationAdapter] = {
-            workload: NativeImplementation(backend, workload)
+            workload: NativeImplementation(backend, workload, adapter)
             for workload in NUMBER_FIELD_WORKLOADS
         }
         if backend in {"silex", "pari", "hecke"}:
@@ -378,7 +506,7 @@ def builtin_registry() -> Registry:
                 id=backend,
                 display_name=displays[backend],
                 implementations=implementations,
-                probe_callback=_probe,
+                probe_callback=partial(_probe, adapter=adapter),
             )
         )
     return Registry(builtin_workloads(), descriptors)

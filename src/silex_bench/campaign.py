@@ -33,6 +33,7 @@ from .contracts import (
     ObservationStatus,
     Registry,
     CAMPAIGN_SCHEMA_VERSION,
+    TimingSample,
     ValidationResult,
     engine_identity_binding,
 )
@@ -81,22 +82,20 @@ class CampaignPlan:
     @property
     def sample_count(self) -> int:
         backend_count = sum(
-            len(
-                self.backends
-                if not case.eligible_backends
-                else tuple(
-                    backend
-                    for backend in self.backends
-                    if backend in set(case.eligible_backends) | {"silex"}
-                )
-            )
+            len(_selected_for_case(case, self.backends, self.execution))
             for case in self.cases
         )
         return backend_count * int(self.execution["repetitions"])
 
     @property
     def nominal_timeout_product_seconds(self) -> float:
-        return self.sample_count * float(self.execution["timeout_seconds"])
+        repetitions = int(self.execution["repetitions"])
+        ceiling = float(self.execution["timeout_seconds"])
+        return repetitions * sum(
+            len(_selected_for_case(case, self.backends, self.execution))
+            * _effective_timeout(case, ceiling)[0]
+            for case in self.cases
+        )
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -166,11 +165,31 @@ def build_plan(
                     f"{workload}: {', '.join(missing)}"
                 )
     execution = effective_execution(profile, overrides)
+    for exclusion in execution.get("backend_exclusions", []):
+        if exclusion["backend"] not in registry.backends:
+            raise ValueError(
+                "profile backend exclusion references an unknown backend: "
+                f"{exclusion['backend']}"
+            )
+        if exclusion["workload"] not in registry.workloads:
+            raise ValueError(
+                "profile backend exclusion references an unknown workload: "
+                f"{exclusion['workload']}"
+            )
+    execution = {
+        **execution,
+        "backend_exclusions": [
+            exclusion
+            for exclusion in execution.get("backend_exclusions", [])
+            if exclusion["backend"] in selected_backends
+            and exclusion["workload"] in selected_workloads
+        ],
+    }
     if not performance:
         execution = {
             **execution,
             "repetitions": 1,
-            "warmups": 0,
+            "jit_repetitions": 0,
             "publication": False,
         }
     materialized = load_cases(suite.corpora, selected_workloads)
@@ -251,6 +270,7 @@ def invocation_context(plan: CampaignPlan) -> InvocationContext:
         cpu=plan.execution.get("cpu"),
         environment=environment,
         selected_workloads=plan.workloads,
+        jit_repetitions=int(plan.execution.get("jit_repetitions", 0)),
     )
 
 
@@ -440,9 +460,11 @@ def _manifest(plan: CampaignPlan, probes: list[EngineInfo]) -> dict[str, Any]:
         },
         "machine": machine,
         "timing": {
-            "primary_clock": "target_wall_ns",
-            "scope": "workload contract: supervisor_marked_target or whole_process",
-            "ratio_definition": "baseline_over_candidate",
+            "primary_clock": "timing_samples.target_wall_ns",
+            "clock_policy": "backend_internal_target_wall",
+            "scope": "sample-local intended operation; supervisor markers audit boundaries",
+            "deadline_policy": "min(campaign_ceiling, case_timeout_hint)",
+            "jit_policy": "Hecke first_call/repeat_call on fresh uncached inputs",
             "performance_execution": "serial_paired_blocks",
         },
     }
@@ -456,17 +478,6 @@ def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
         stream.flush()
         os.fsync(stream.fileno())
     os.replace(temporary, path)
-
-
-def _warmup(case: Case, cases: tuple[Case, ...]) -> Case | None:
-    matches = [
-        candidate
-        for candidate in cases
-        if candidate.workload == case.workload
-        and candidate.id != case.id
-        and candidate.metrics.get("degree") == case.metrics.get("degree")
-    ]
-    return matches[0] if matches else case
 
 
 def _backend_order(case: Case, repetition: int, backends: tuple[str, ...]) -> list[str]:
@@ -536,6 +547,61 @@ def _enforce_engine_binding(
     )
 
 
+def _ensure_timing_samples(
+    observation: Observation,
+    case: Case,
+    context: InvocationContext,
+    timing_scope: str,
+) -> Observation:
+    """Give third-party adapters the schema-v2 standard timing envelope."""
+
+    if observation.timing_samples or (
+        observation.target_wall_ns is None
+        and observation.process_wall_ns is None
+    ):
+        return observation
+    internal = observation.internal_timing
+    target_cpu_ms = internal.get(
+        "marked_target_cpu_ms", internal.get("target_cpu_ms")
+    )
+    target_cpu_ns = (
+        int(round(float(target_cpu_ms) * 1_000_000))
+        if isinstance(target_cpu_ms, (int, float))
+        and not isinstance(target_cpu_ms, bool)
+        and target_cpu_ms >= 0
+        else None
+    )
+    sample = TimingSample(
+        case_key=case.key,
+        workload=case.workload,
+        backend=observation.backend,
+        repetition=observation.repetition,
+        variant="standard",
+        sample_index=0,
+        status=observation.status,
+        timeout=observation.timeout,
+        target_wall_ns=observation.target_wall_ns,
+        target_cpu_ns=target_cpu_ns,
+        process_wall_ns=observation.process_wall_ns,
+        timing_scope=str(internal.get("scope") or timing_scope),
+        effective_timeout_seconds=context.timeout_seconds,
+        timeout_source=context.timeout_source,
+        wall_clock=(
+            str(internal["wall_clock"])
+            if internal.get("wall_clock") is not None
+            else None
+        ),
+        cpu_clock=(
+            str(internal["algorithm_clock"])
+            if internal.get("algorithm_clock") is not None
+            else None
+        ),
+        internal_timing=dict(internal),
+        diagnostics={},
+    )
+    return dataclasses.replace(observation, timing_samples=(sample,))
+
+
 def _observation_from_json(payload: Mapping[str, Any]) -> Observation:
     validation_raw = payload.get("validation", {})
     status = ObservationStatus(str(payload["status"]))
@@ -566,12 +632,40 @@ def _observation_from_json(payload: Mapping[str, Any]) -> Observation:
     )
 
 
-def _selected_for_case(case: Case, backends: tuple[str, ...]) -> tuple[str, ...]:
+def _selected_for_case(
+    case: Case,
+    backends: tuple[str, ...],
+    execution: Mapping[str, Any] | None = None,
+) -> tuple[str, ...]:
     if not case.eligible_backends:
-        return backends
-    allowed = set(case.eligible_backends)
-    allowed.add("silex")
-    return tuple(backend for backend in backends if backend in allowed)
+        selected = backends
+    else:
+        allowed = set(case.eligible_backends)
+        allowed.add("silex")
+        selected = tuple(backend for backend in backends if backend in allowed)
+    exclusions = (
+        execution.get("backend_exclusions", [])
+        if execution is not None
+        else []
+    )
+    excluded = {
+        str(item.get("backend"))
+        for item in exclusions
+        if isinstance(item, Mapping)
+        and item.get("workload") == case.workload
+    }
+    return tuple(backend for backend in selected if backend not in excluded)
+
+
+def _effective_timeout(case: Case, ceiling: float) -> tuple[float, str]:
+    hint = case.input.get("timeout_seconds")
+    if (
+        isinstance(hint, (int, float))
+        and not isinstance(hint, bool)
+        and float(hint) > 0
+    ):
+        return min(ceiling, float(hint)), "min(campaign_ceiling,case_timeout_hint)"
+    return ceiling, "campaign_ceiling"
 
 
 def _pairs(
@@ -613,8 +707,6 @@ def _compute_agreements(
                 {"present": False},
                 AgreementStatus.INCOMPLETE,
             )
-            eligible = False
-            ratio = None
         elif ObservationStatus.UNSUPPORTED in {lhs.status, rhs.status}:
             result = AgreementResult(
                 False,
@@ -622,8 +714,6 @@ def _compute_agreements(
                 {"supported": False},
                 AgreementStatus.UNSUPPORTED,
             )
-            eligible = False
-            ratio = None
         elif ObservationStatus.UNAVAILABLE in {lhs.status, rhs.status}:
             result = AgreementResult(
                 False,
@@ -631,8 +721,6 @@ def _compute_agreements(
                 {"available": False},
                 AgreementStatus.UNAVAILABLE,
             )
-            eligible = False
-            ratio = None
         elif not lhs.correctness_eligible or not rhs.correctness_eligible:
             result = AgreementResult(
                 False,
@@ -640,30 +728,14 @@ def _compute_agreements(
                 {"validated": False},
                 AgreementStatus.INVALID,
             )
-            eligible = False
-            ratio = None
         else:
             result = contract.compare(case, candidate, lhs.result, baseline, rhs.result)
-            eligible = bool(
-                plan.performance
-                and case.performance_eligible
-                and result.success
-                and lhs.timing_eligible
-                and rhs.timing_eligible
-            )
-            ratio = (
-                rhs.target_wall_ns / lhs.target_wall_ns
-                if eligible and lhs.target_wall_ns and rhs.target_wall_ns
-                else None
-            )
         ledger.put_agreement(
             case.key,
             repetition,
             candidate,
             baseline,
             result,
-            timing_eligible=eligible,
-            ratio=ratio,
         )
 
 
@@ -671,7 +743,7 @@ def _required_pair_success(snapshot: dict[str, Any], plan: CampaignPlan) -> bool
     required = set(plan.required_pairs)
     expected: set[tuple[str, int, str, str]] = set()
     for case in plan.cases:
-        selected = _selected_for_case(case, plan.backends)
+        selected = _selected_for_case(case, plan.backends, plan.execution)
         for pair in required:
             if pair[0] in selected and pair[1] in selected:
                 for repetition in range(int(plan.execution["repetitions"])):
@@ -697,7 +769,7 @@ def _strict_success(snapshot: dict[str, Any], plan: CampaignPlan) -> bool:
     applicable = {
         (case.key, backend, repetition)
         for case in plan.cases
-        for backend in _selected_for_case(case, plan.backends)
+        for backend in _selected_for_case(case, plan.backends, plan.execution)
         if case.workload in plan.registry.backends[backend].implementations
         for repetition in range(int(plan.execution["repetitions"]))
     }
@@ -717,7 +789,7 @@ def _strict_success(snapshot: dict[str, Any], plan: CampaignPlan) -> bool:
         return False
     applicable_pairs: set[tuple[str, int, str, str]] = set()
     for case in plan.cases:
-        selected = _selected_for_case(case, plan.backends)
+        selected = _selected_for_case(case, plan.backends, plan.execution)
         supported = tuple(
             backend
             for backend in selected
@@ -738,9 +810,6 @@ def _strict_success(snapshot: dict[str, Any], plan: CampaignPlan) -> bool:
     for key in applicable_pairs:
         row = agreements.get(key, {})
         if row.get("status") != AgreementStatus.AGREE.value:
-            return False
-        case = next(item for item in plan.cases if item.key == key[0])
-        if plan.performance and case.performance_eligible and row.get("timing_eligible") is not True:
             return False
     return True
 
@@ -771,71 +840,89 @@ def run_campaign(
         _atomic_json(run_dir / "manifest.json", manifest)
         context = invocation_context(plan)
         exhausted = False
-        for case in plan.cases:
-            selected = _selected_for_case(case, plan.backends)
-            for repetition in range(int(plan.execution["repetitions"])):
-                order = _backend_order(case, repetition, selected)
-                for order_index, backend in enumerate(order):
-                    if ledger.has_observation(case.key, backend, repetition):
-                        continue
-                    if budget is not None and time.monotonic() - started >= float(budget):
-                        exhausted = True
+        interrupted = False
+        completed = ledger.observation_count()
+        try:
+            for case in plan.cases:
+                selected = _selected_for_case(case, plan.backends, plan.execution)
+                timeout_seconds, timeout_source = _effective_timeout(
+                    case, float(plan.execution["timeout_seconds"])
+                )
+                case_context = dataclasses.replace(
+                    context,
+                    timeout_seconds=timeout_seconds,
+                    timeout_source=timeout_source,
+                )
+                for repetition in range(int(plan.execution["repetitions"])):
+                    order = _backend_order(case, repetition, selected)
+                    for order_index, backend in enumerate(order):
+                        if ledger.has_observation(case.key, backend, repetition):
+                            continue
+                        if budget is not None and time.monotonic() - started >= float(budget):
+                            exhausted = True
+                            break
+                        probe = by_probe[backend]
+                        descriptor = plan.registry.backends[backend]
+                        implementation = descriptor.implementations.get(case.workload)
+                        if implementation is None:
+                            observation = _placeholder(
+                                case,
+                                backend,
+                                repetition,
+                                order_index,
+                                ObservationStatus.UNSUPPORTED,
+                                f"{backend} does not support {case.workload}",
+                                probe.identity,
+                            )
+                        elif not probe.available:
+                            observation = _placeholder(
+                                case,
+                                backend,
+                                repetition,
+                                order_index,
+                                ObservationStatus.UNAVAILABLE,
+                                probe.error or f"{backend} is unavailable",
+                                probe.identity,
+                            )
+                        else:
+                            observation = implementation.run(
+                                case,
+                                repetition=repetition,
+                                order_index=order_index,
+                                warmup=None,
+                                context=case_context,
+                                contract=plan.registry.workloads[case.workload],
+                            )
+                            observation = _enforce_engine_binding(observation, probe)
+                            observation = _ensure_timing_samples(
+                                observation,
+                                case,
+                                case_context,
+                                plan.registry.workloads[case.workload].timing_scope,
+                            )
+                        ledger.put_observation(observation)
+                        completed += 1
+                        if progress is not None:
+                            progress(observation, completed, plan.sample_count)
+                    if exhausted:
+                        _compute_agreements(ledger, plan, case, repetition, selected)
                         break
-                    probe = by_probe[backend]
-                    descriptor = plan.registry.backends[backend]
-                    implementation = descriptor.implementations.get(case.workload)
-                    if implementation is None:
-                        observation = _placeholder(
-                            case,
-                            backend,
-                            repetition,
-                            order_index,
-                            ObservationStatus.UNSUPPORTED,
-                            f"{backend} does not support {case.workload}",
-                            probe.identity,
-                        )
-                    elif not probe.available:
-                        observation = _placeholder(
-                            case,
-                            backend,
-                            repetition,
-                            order_index,
-                            ObservationStatus.UNAVAILABLE,
-                            probe.error or f"{backend} is unavailable",
-                            probe.identity,
-                        )
-                    else:
-                        observation = implementation.run(
-                            case,
-                            repetition=repetition,
-                            order_index=order_index,
-                            warmup=(
-                                _warmup(case, plan.cases)
-                                if int(plan.execution["warmups"]) > 0
-                                else None
-                            ),
-                            context=context,
-                            contract=plan.registry.workloads[case.workload],
-                        )
-                        observation = _enforce_engine_binding(observation, probe)
-                    ledger.put_observation(observation)
-                    if progress is not None:
-                        progress(observation, len(ledger.observations()), plan.sample_count)
-                if exhausted:
                     _compute_agreements(ledger, plan, case, repetition, selected)
+                if exhausted:
                     break
-                _compute_agreements(ledger, plan, case, repetition, selected)
+        except KeyboardInterrupt:
+            interrupted = True
+            ledger.set_state("interrupted")
+        if not interrupted:
             if exhausted:
-                break
-        if exhausted:
-            ledger.set_state("budget_exhausted")
-        else:
-            snapshot = ledger.snapshot()
-            ledger.set_state(
-                "complete"
-                if _required_pair_success(snapshot, plan) and _strict_success(snapshot, plan)
-                else "failed"
-            )
+                ledger.set_state("budget_exhausted")
+            else:
+                snapshot = ledger.snapshot()
+                ledger.set_state(
+                    "complete"
+                    if _required_pair_success(snapshot, plan) and _strict_success(snapshot, plan)
+                    else "failed"
+                )
         snapshot = ledger.snapshot()
     return snapshot
 

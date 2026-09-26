@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import itertools
 import json
+import math
 import sqlite3
 import time
 from pathlib import Path
@@ -16,6 +18,7 @@ from .contracts import (
     EngineInfo,
     Observation,
     ObservationStatus,
+    TimingSample,
     validate_campaign_manifest,
 )
 
@@ -62,18 +65,39 @@ CREATE TABLE IF NOT EXISTS agreements (
     rhs_backend TEXT NOT NULL,
     status TEXT NOT NULL,
     success INTEGER NOT NULL,
-    timing_eligible INTEGER NOT NULL,
-    ratio REAL,
     agreement_json TEXT NOT NULL,
     PRIMARY KEY (case_key, repetition, lhs_backend, rhs_backend)
+);
+CREATE TABLE IF NOT EXISTS timing_samples (
+    case_key TEXT NOT NULL,
+    backend TEXT NOT NULL,
+    repetition INTEGER NOT NULL,
+    variant TEXT NOT NULL,
+    sample_index INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    timeout INTEGER NOT NULL,
+    target_wall_ns INTEGER,
+    target_cpu_ns INTEGER,
+    process_wall_ns INTEGER,
+    timing_scope TEXT NOT NULL,
+    effective_timeout_seconds REAL NOT NULL,
+    sample_json TEXT NOT NULL,
+    PRIMARY KEY (case_key, backend, repetition, variant, sample_index),
+    FOREIGN KEY (case_key, backend, repetition)
+        REFERENCES observations(case_key, backend, repetition)
 );
 CREATE INDEX IF NOT EXISTS observations_workload_backend
     ON observations(workload, backend, case_key, repetition);
 CREATE INDEX IF NOT EXISTS agreements_pair
     ON agreements(lhs_backend, rhs_backend, case_key, repetition);
+CREATE INDEX IF NOT EXISTS timing_samples_workload
+    ON timing_samples(case_key, backend, repetition, variant, sample_index);
 """
 
-RUN_STATES = frozenset({"running", "budget_exhausted", "complete", "failed"})
+RUN_STATES = frozenset(
+    {"running", "interrupted", "budget_exhausted", "complete", "failed"}
+)
+LEGACY_RUN_STATES = frozenset({"running", "budget_exhausted", "complete", "failed"})
 
 
 def _now() -> str:
@@ -94,12 +118,71 @@ def _decode_object(value: Any, label: str) -> dict[str, Any]:
     return payload
 
 
-def _selected_backends(case: dict[str, Any], backends: list[str]) -> set[str]:
+def _selected_backend_order(
+    case: dict[str, Any], backends: list[str], execution: dict[str, Any]
+) -> tuple[str, ...]:
     eligible = set(case["eligible_backends"])
     if not eligible:
-        return set(backends)
-    eligible.add("silex")
-    return set(backends) & eligible
+        selected = tuple(backends)
+    else:
+        eligible.add("silex")
+        selected = tuple(backend for backend in backends if backend in eligible)
+    excluded = {
+        item.get("backend")
+        for item in execution.get("backend_exclusions", [])
+        if isinstance(item, dict) and item.get("workload") == case["workload"]
+    }
+    return tuple(backend for backend in selected if backend not in excluded)
+
+
+def _selected_backends(
+    case: dict[str, Any], backends: list[str], execution: dict[str, Any]
+) -> set[str]:
+    return set(_selected_backend_order(case, backends, execution))
+
+
+def _agreement_pairs(
+    backends: tuple[str, ...], required_pairs: list[list[str]]
+) -> tuple[tuple[str, str], ...]:
+    pairs = [
+        (str(pair[0]), str(pair[1]))
+        for pair in required_pairs
+        if pair[0] in backends and pair[1] in backends
+    ]
+    present = {frozenset(pair) for pair in pairs}
+    for lhs, rhs in itertools.combinations(backends, 2):
+        if frozenset((lhs, rhs)) in present:
+            continue
+        if rhs == "silex":
+            lhs, rhs = rhs, lhs
+        pairs.append((lhs, rhs))
+    return tuple(pairs)
+
+
+def _expected_timing_coordinates(
+    case: dict[str, Any], backend: str, execution: dict[str, Any]
+) -> tuple[tuple[str, int], ...]:
+    if (
+        backend == "hecke"
+        and case["workload"] != "sunit_proven"
+        and execution.get("jit_repetitions") == 1
+    ):
+        return (("first_call", 0), ("repeat_call", 1))
+    return (("standard", 0),)
+
+
+def _effective_deadline(
+    case: dict[str, Any], execution: dict[str, Any]
+) -> tuple[float, str]:
+    ceiling = float(execution["timeout_seconds"])
+    hint = case.get("input", {}).get("timeout_seconds")
+    if (
+        isinstance(hint, (int, float))
+        and not isinstance(hint, bool)
+        and float(hint) > 0
+    ):
+        return min(ceiling, float(hint)), "min(campaign_ceiling,case_timeout_hint)"
+    return ceiling, "campaign_ceiling"
 
 
 class RunLedger:
@@ -113,26 +196,47 @@ class RunLedger:
             raise ValueError(f"run ledger is not a regular file: {self.path}")
         if not create and not existed:
             raise ValueError(f"run ledger does not exist: {self.path}")
-        self.connection = sqlite3.connect(self.path, timeout=30)
+        self.schema_version = CAMPAIGN_SCHEMA_VERSION
+        self.read_only = False
+        if existed:
+            self.connection = sqlite3.connect(
+                self.path.as_uri() + "?mode=ro", uri=True, timeout=30
+            )
+        else:
+            self.connection = sqlite3.connect(self.path, timeout=30)
         try:
             self.connection.row_factory = sqlite3.Row
-            self.connection.execute("PRAGMA busy_timeout = 30000")
             if not existed:
                 with self.connection:
                     self.connection.executescript(SCHEMA_SQL)
                     self.connection.execute(
                         f"PRAGMA user_version = {CAMPAIGN_SCHEMA_VERSION}"
                     )
-            version = self.connection.execute("PRAGMA user_version").fetchone()[0]
-            if version != CAMPAIGN_SCHEMA_VERSION:
+            version = int(
+                self.connection.execute("PRAGMA user_version").fetchone()[0]
+            )
+            self.schema_version = version
+            if version not in {1, CAMPAIGN_SCHEMA_VERSION}:
                 raise ValueError(
-                    "run ledger schema must be "
+                    "run ledger schema must be 1 (report-only) or "
                     f"{CAMPAIGN_SCHEMA_VERSION}, got {version}"
                 )
             if existed:
                 self._validate_existing_run()
+            if version == 1:
+                self.read_only = True
+                return
+            if existed:
+                # Existing ledgers are validated through a read-only handle
+                # before they are reopened for a v2 resume.
+                self.connection.close()
+                self.connection = sqlite3.connect(self.path, timeout=30)
+                self.connection.row_factory = sqlite3.Row
+                self.connection.execute("PRAGMA foreign_keys = ON")
+                self._validate_existing_run()
             # These settings are intentionally applied only after an existing
             # ledger and its embedded manifest pass the read-only checks above.
+            self.connection.execute("PRAGMA busy_timeout = 30000")
             self.connection.execute("PRAGMA journal_mode = WAL")
             self.connection.execute("PRAGMA synchronous = FULL")
         except BaseException:
@@ -149,15 +253,17 @@ class RunLedger:
             raise ValueError(f"invalid run ledger schema: {exc}") from exc
         if row is None:
             raise ValueError("run ledger is not initialized")
-        if row["schema_version"] != CAMPAIGN_SCHEMA_VERSION:
+        if row["schema_version"] != self.schema_version:
             raise ValueError(
                 "run row schema_version must be "
-                f"{CAMPAIGN_SCHEMA_VERSION}, got {row['schema_version']}"
+                f"{self.schema_version}, got {row['schema_version']}"
             )
-        if row["state"] not in RUN_STATES:
+        states = RUN_STATES if self.schema_version == CAMPAIGN_SCHEMA_VERSION else LEGACY_RUN_STATES
+        if row["state"] not in states:
             raise ValueError(f"invalid run ledger state: {row['state']!r}")
         manifest = _decode_object(row["manifest_json"], "run manifest")
         validate_campaign_manifest(manifest)
+        self._require_manifest_schema(manifest)
         fingerprint = row["fingerprint"]
         if (
             not isinstance(fingerprint, str)
@@ -188,13 +294,32 @@ class RunLedger:
                 "SELECT case_key, workload, case_json FROM cases"
             ).fetchall()
             observation_rows = self.connection.execute(
-                "SELECT case_key, workload, backend, repetition, status, "
+                "SELECT case_key, workload, backend, repetition, order_index, "
+                "status, success, timeout, target_wall_ns, process_wall_ns, "
                 "observation_json FROM observations"
             ).fetchall()
+            agreement_columns = (
+                "case_key, repetition, lhs_backend, rhs_backend, status, success, "
+                + (
+                    "timing_eligible, ratio, "
+                    if self.schema_version == 1
+                    else ""
+                )
+                + "agreement_json"
+            )
             agreement_rows = self.connection.execute(
-                "SELECT case_key, repetition, lhs_backend, rhs_backend, status, "
-                "agreement_json FROM agreements"
+                f"SELECT {agreement_columns} FROM agreements"
             ).fetchall()
+            timing_rows = (
+                self.connection.execute(
+                    "SELECT case_key, backend, repetition, variant, sample_index, "
+                    "status, timeout, target_wall_ns, target_cpu_ns, "
+                    "process_wall_ns, timing_scope, effective_timeout_seconds, "
+                    "sample_json FROM timing_samples"
+                ).fetchall()
+                if self.schema_version == CAMPAIGN_SCHEMA_VERSION
+                else []
+            )
         except sqlite3.Error as exc:
             raise ValueError(f"invalid run ledger schema: {exc}") from exc
 
@@ -231,13 +356,14 @@ class RunLedger:
             stored_cases.add(case_key)
 
         observation_statuses = {status.value for status in ObservationStatus}
+        observations_by_key: dict[tuple[str, str, int], sqlite3.Row] = {}
         for row in observation_rows:
             case_key = row["case_key"]
             backend = row["backend"]
             if case_key not in stored_cases or case_key not in cases:
                 raise ValueError("run ledger observation references an unknown case")
             if backend not in stored_engines or backend not in _selected_backends(
-                cases[case_key], backends
+                cases[case_key], backends, plan["execution"]
             ):
                 raise ValueError("run ledger observation references an invalid backend")
             repetition = row["repetition"]
@@ -257,11 +383,17 @@ class RunLedger:
                 "backend": backend,
                 "repetition": repetition,
                 "status": row["status"],
+                "order_index": row["order_index"],
+                "success": bool(row["success"]),
+                "timeout": bool(row["timeout"]),
+                "target_wall_ns": row["target_wall_ns"],
+                "process_wall_ns": row["process_wall_ns"],
             }
             if any(payload.get(key) != value for key, value in references.items()):
                 raise ValueError(
                     "run ledger observation columns do not match its JSON payload"
                 )
+            observations_by_key[(case_key, backend, repetition)] = row
 
         agreement_statuses = {status.value for status in AgreementStatus}
         for row in agreement_rows:
@@ -270,7 +402,9 @@ class RunLedger:
             rhs = row["rhs_backend"]
             if case_key not in stored_cases or case_key not in cases:
                 raise ValueError("run ledger agreement references an unknown case")
-            selected = _selected_backends(cases[case_key], backends)
+            selected = _selected_backends(
+                cases[case_key], backends, plan["execution"]
+            )
             if lhs == rhs or lhs not in selected or rhs not in selected:
                 raise ValueError("run ledger agreement references an invalid backend pair")
             if lhs not in stored_engines or rhs not in stored_engines:
@@ -290,11 +424,149 @@ class RunLedger:
                 "lhs_backend": lhs,
                 "rhs_backend": rhs,
                 "status": row["status"],
+                "success": bool(row["success"]),
             }
             if any(payload.get(key) != value for key, value in references.items()):
                 raise ValueError(
                     "run ledger agreement columns do not match its JSON payload"
                 )
+            if self.schema_version == 1:
+                if payload.get("timing_eligible") is not bool(
+                    row["timing_eligible"]
+                ) or payload.get("speedup_baseline_over_candidate") != row["ratio"]:
+                    raise ValueError(
+                        "run ledger agreement timing columns do not match its JSON payload"
+                    )
+
+        observation_keys = {
+            (row["case_key"], row["backend"], row["repetition"])
+            for row in observation_rows
+        }
+        sample_keys: set[tuple[str, str, int, str, int]] = set()
+        timing_rows_by_key: dict[
+            tuple[str, str, int, str, int], sqlite3.Row
+        ] = {}
+        samples_by_parent: dict[
+            tuple[str, str, int], set[tuple[str, int]]
+        ] = {}
+        for row in timing_rows:
+            parent = (row["case_key"], row["backend"], row["repetition"])
+            if parent not in observation_keys:
+                raise ValueError("run ledger timing sample references an unknown observation")
+            payload = _decode_object(
+                row["sample_json"],
+                "timing sample "
+                f"{row['case_key']}/{row['backend']}/{row['repetition']}/"
+                f"{row['variant']}/{row['sample_index']}",
+            )
+            references = {
+                "case_key": row["case_key"],
+                "workload": cases[row["case_key"]]["workload"],
+                "backend": row["backend"],
+                "repetition": row["repetition"],
+                "variant": row["variant"],
+                "sample_index": row["sample_index"],
+                "status": row["status"],
+                "timeout": bool(row["timeout"]),
+                "target_wall_ns": row["target_wall_ns"],
+                "target_cpu_ns": row["target_cpu_ns"],
+                "process_wall_ns": row["process_wall_ns"],
+                "timing_scope": row["timing_scope"],
+                "effective_timeout_seconds": row["effective_timeout_seconds"],
+            }
+            if any(payload.get(key) != value for key, value in references.items()):
+                raise ValueError(
+                    "run ledger timing sample columns do not match its JSON payload"
+                )
+            if row["status"] not in observation_statuses:
+                raise ValueError("run ledger timing sample has an invalid status")
+            if bool(row["timeout"]) != (row["status"] == "timeout"):
+                raise ValueError(
+                    "run ledger timing sample timeout flag and status disagree"
+                )
+            if not isinstance(row["variant"], str) or not row["variant"]:
+                raise ValueError("run ledger timing sample variant must be nonempty")
+            if type(row["sample_index"]) is not int or row["sample_index"] < 0:
+                raise ValueError("run ledger timing sample index must be nonnegative")
+            if not isinstance(row["timing_scope"], str) or not row["timing_scope"]:
+                raise ValueError("run ledger timing sample scope must be nonempty")
+            if (
+                not isinstance(row["effective_timeout_seconds"], (int, float))
+                or not math.isfinite(float(row["effective_timeout_seconds"]))
+                or row["effective_timeout_seconds"] <= 0
+            ):
+                raise ValueError("run ledger timing sample deadline must be positive")
+            if not isinstance(payload.get("timeout_source"), str) or not payload[
+                "timeout_source"
+            ]:
+                raise ValueError(
+                    "run ledger timing sample timeout source must be nonempty"
+                )
+            expected_timeout, expected_source = _effective_deadline(
+                cases[row["case_key"]], plan["execution"]
+            )
+            if (
+                float(row["effective_timeout_seconds"]) != expected_timeout
+                or payload["timeout_source"] != expected_source
+            ):
+                raise ValueError(
+                    "run ledger timing sample deadline differs from the planned case deadline"
+                )
+            for clock in (
+                "target_wall_ns",
+                "target_cpu_ns",
+                "process_wall_ns",
+            ):
+                value = row[clock]
+                if value is not None and (type(value) is not int or value < 0):
+                    raise ValueError(
+                        f"run ledger timing sample {clock} must be nonnegative or null"
+                    )
+            if row["status"] == "ok" and type(row["target_wall_ns"]) is not int:
+                raise ValueError(
+                    "successful timing samples require a nonnegative target wall clock"
+                )
+            if row["status"] == "ok" and (
+                not isinstance(payload.get("wall_clock"), str)
+                or not payload["wall_clock"].strip()
+            ):
+                raise ValueError(
+                    "successful timing samples require a declared wall clock"
+                )
+            key = (*parent, row["variant"], row["sample_index"])
+            if key in sample_keys:
+                raise ValueError("run ledger contains a duplicate timing sample")
+            sample_keys.add(key)
+            timing_rows_by_key[key] = row
+            samples_by_parent.setdefault(parent, set()).add(
+                (row["variant"], row["sample_index"])
+            )
+
+        if self.schema_version == CAMPAIGN_SCHEMA_VERSION:
+            for parent, observation_row in observations_by_key.items():
+                if not bool(observation_row["success"]):
+                    continue
+                case_key, backend, _ = parent
+                expected = set(
+                    _expected_timing_coordinates(
+                        cases[case_key], backend, plan["execution"]
+                    )
+                )
+                actual = samples_by_parent.get(parent, set())
+                if actual != expected:
+                    raise ValueError(
+                        "successful observation timing variants do not match the plan: "
+                        f"{case_key}/{backend} expected {sorted(expected)}, "
+                        f"got {sorted(actual)}"
+                    )
+                for variant, sample_index in expected:
+                    sample_row = timing_rows_by_key[
+                        (*parent, variant, sample_index)
+                    ]
+                    if sample_row["status"] != ObservationStatus.OK.value:
+                        raise ValueError(
+                            "successful observation contains an unsuccessful timing sample"
+                        )
 
         if state in {"complete", "failed"}:
             if stored_engines != backend_set:
@@ -305,6 +577,40 @@ class RunLedger:
                 raise ValueError(
                     "terminal run ledger observation count does not match plan.sample_count"
                 )
+            if self.schema_version == CAMPAIGN_SCHEMA_VERSION:
+                expected_agreements = {
+                    (case_key, repetition, lhs, rhs)
+                    for case_key, case in cases.items()
+                    for lhs, rhs in _agreement_pairs(
+                        _selected_backend_order(case, backends, plan["execution"]),
+                        plan["required_pairs"],
+                    )
+                    for repetition in range(repetitions)
+                }
+                actual_agreements = {
+                    (
+                        row["case_key"],
+                        row["repetition"],
+                        row["lhs_backend"],
+                        row["rhs_backend"],
+                    )
+                    for row in agreement_rows
+                }
+                if actual_agreements != expected_agreements:
+                    raise ValueError(
+                        "terminal run ledger agreement coordinates do not match the plan"
+                    )
+            if self.schema_version == CAMPAIGN_SCHEMA_VERSION:
+                successful = {
+                    (row["case_key"], row["backend"], row["repetition"])
+                    for row in observation_rows
+                    if bool(row["success"])
+                }
+                sampled = {(row[0], row[1], row[2]) for row in sample_keys}
+                if not successful.issubset(sampled):
+                    raise ValueError(
+                        "terminal run ledger is missing timing samples for successful observations"
+                    )
 
     def __enter__(self) -> "RunLedger":
         return self
@@ -315,8 +621,23 @@ class RunLedger:
     def close(self) -> None:
         self.connection.close()
 
+    def _require_writable(self) -> None:
+        if self.read_only:
+            raise ValueError(
+                "campaign schema v1 ledgers are report-only and cannot be resumed or mutated"
+            )
+
+    def _require_manifest_schema(self, manifest: dict[str, Any]) -> None:
+        if manifest["schema_version"] != self.schema_version:
+            raise ValueError(
+                "manifest schema_version does not match the ledger: "
+                f"{manifest['schema_version']} != {self.schema_version}"
+            )
+
     def initialize(self, fingerprint: str, manifest: dict[str, Any]) -> None:
+        self._require_writable()
         validate_campaign_manifest(manifest)
+        self._require_manifest_schema(manifest)
         if fingerprint != manifest["run_fingerprint"]:
             raise ValueError(
                 "run ledger fingerprint does not match the embedded manifest"
@@ -346,16 +667,18 @@ class RunLedger:
         ).fetchone()
         if row is None:
             raise ValueError("run ledger is not initialized")
-        if row["schema_version"] != CAMPAIGN_SCHEMA_VERSION:
+        if row["schema_version"] != self.schema_version:
             raise ValueError(
                 "run row schema_version must be "
-                f"{CAMPAIGN_SCHEMA_VERSION}, got {row['schema_version']}"
+                f"{self.schema_version}, got {row['schema_version']}"
             )
         try:
             value = json.loads(row["manifest_json"])
         except (TypeError, json.JSONDecodeError) as exc:
             raise ValueError(f"invalid run manifest JSON: {exc}") from exc
-        return validate_campaign_manifest(value)
+        validate_campaign_manifest(value)
+        self._require_manifest_schema(value)
+        return value
 
     def fingerprint(self) -> str:
         row = self.connection.execute("SELECT fingerprint FROM run WHERE singleton = 1").fetchone()
@@ -368,8 +691,11 @@ class RunLedger:
         return "uninitialized" if row is None else str(row["state"])
 
     def set_state(self, state: str) -> None:
+        self._require_writable()
         if state not in RUN_STATES:
             raise ValueError(f"invalid run ledger state: {state!r}")
+        if state in {"complete", "failed"}:
+            self._validate_existing_rows(self.manifest(), state=state)
         with self.connection:
             self.connection.execute(
                 "UPDATE run SET state = ?, updated_at = ? WHERE singleton = 1",
@@ -377,6 +703,7 @@ class RunLedger:
             )
 
     def put_engines(self, engines: Iterable[EngineInfo]) -> None:
+        self._require_writable()
         with self.connection:
             for engine in engines:
                 encoded = _json(engine.to_json())
@@ -391,6 +718,7 @@ class RunLedger:
                 )
 
     def put_cases(self, cases: Iterable[Case]) -> None:
+        self._require_writable()
         with self.connection:
             for case in cases:
                 encoded = _json(case.to_json())
@@ -412,14 +740,110 @@ class RunLedger:
         return row is not None
 
     def put_observation(self, observation: Observation) -> None:
+        self._require_writable()
+        case_row = self.connection.execute(
+            "SELECT case_json FROM cases WHERE case_key = ?", (observation.case_key,)
+        ).fetchone()
+        if case_row is None:
+            raise ValueError("observation references an unstored case")
+        case_payload = _decode_object(
+            case_row["case_json"], f"case {observation.case_key}"
+        )
+        execution = self.manifest()["plan"]["execution"]
+        expected_timeout, expected_timeout_source = _effective_deadline(
+            case_payload, execution
+        )
         encoded = _json(observation.to_json())
+        sample_rows: list[tuple[TimingSample, str]] = []
+        sample_keys: set[tuple[str, int]] = set()
+        for sample in observation.timing_samples:
+            if (
+                sample.case_key != observation.case_key
+                or sample.workload != observation.workload
+                or sample.backend != observation.backend
+                or sample.repetition != observation.repetition
+            ):
+                raise ValueError("timing sample coordinates do not match observation")
+            key = (sample.variant, sample.sample_index)
+            if key in sample_keys:
+                raise ValueError("timing sample variants and indexes must be unique")
+            sample_keys.add(key)
+            if (
+                not isinstance(sample.variant, str)
+                or not sample.variant
+                or type(sample.sample_index) is not int
+                or sample.sample_index < 0
+            ):
+                raise ValueError("timing sample identity is invalid")
+            if type(sample.timeout) is not bool or sample.timeout != (sample.status is ObservationStatus.TIMEOUT):
+                raise ValueError("timing sample timeout flag and status disagree")
+            if (
+                not math.isfinite(sample.effective_timeout_seconds)
+                or sample.effective_timeout_seconds <= 0
+                or not sample.timeout_source
+                or not sample.timing_scope
+            ):
+                raise ValueError("timing sample scope or deadline is invalid")
+            if (
+                sample.effective_timeout_seconds != expected_timeout
+                or sample.timeout_source != expected_timeout_source
+            ):
+                raise ValueError(
+                    "timing sample deadline differs from the planned case deadline"
+                )
+            for clock in ("target_wall_ns", "target_cpu_ns", "process_wall_ns"):
+                value = getattr(sample, clock)
+                if value is not None and (type(value) is not int or value < 0):
+                    raise ValueError(f"timing sample {clock} must be nonnegative or null")
+            if sample.status is ObservationStatus.OK and type(sample.target_wall_ns) is not int:
+                raise ValueError(
+                    "successful timing samples require a nonnegative target wall clock"
+                )
+            if sample.status is ObservationStatus.OK and (
+                not isinstance(sample.wall_clock, str)
+                or not sample.wall_clock.strip()
+            ):
+                raise ValueError(
+                    "successful timing samples require a declared wall clock"
+                )
+            sample_rows.append((sample, _json(sample.to_json())))
+        if observation.success:
+            expected_coordinates = set(
+                _expected_timing_coordinates(
+                    case_payload, observation.backend, execution
+                )
+            )
+            if sample_keys != expected_coordinates:
+                raise ValueError(
+                    "successful observation timing variants do not match the plan: "
+                    f"expected {sorted(expected_coordinates)}, got {sorted(sample_keys)}"
+                )
+            if any(
+                sample.status is not ObservationStatus.OK for sample, _ in sample_rows
+            ):
+                raise ValueError(
+                    "successful observation contains an unsuccessful timing sample"
+                )
         with self.connection:
             existing = self.connection.execute(
                 "SELECT observation_json FROM observations WHERE case_key = ? AND backend = ? AND repetition = ?",
                 (observation.case_key, observation.backend, observation.repetition),
             ).fetchone()
             if existing is not None:
-                if existing["observation_json"] != encoded:
+                existing_samples = self.connection.execute(
+                    "SELECT variant, sample_index, sample_json FROM timing_samples "
+                    "WHERE case_key = ? AND backend = ? AND repetition = ?",
+                    (observation.case_key, observation.backend, observation.repetition),
+                ).fetchall()
+                children = {
+                    (row["variant"], row["sample_index"]): row["sample_json"]
+                    for row in existing_samples
+                }
+                requested_children = {
+                    (sample.variant, sample.sample_index): sample_json
+                    for sample, sample_json in sample_rows
+                }
+                if existing["observation_json"] != encoded or children != requested_children:
                     raise ValueError(
                         f"observation collision for {observation.case_key}/{observation.backend}/{observation.repetition}"
                     )
@@ -440,6 +864,31 @@ class RunLedger:
                     encoded,
                 ),
             )
+            for sample, sample_json in sample_rows:
+                self.connection.execute(
+                    """INSERT INTO timing_samples VALUES
+                       (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        sample.case_key,
+                        sample.backend,
+                        sample.repetition,
+                        sample.variant,
+                        sample.sample_index,
+                        sample.status.value,
+                        int(sample.timeout),
+                        sample.target_wall_ns,
+                        sample.target_cpu_ns,
+                        sample.process_wall_ns,
+                        sample.timing_scope,
+                        sample.effective_timeout_seconds,
+                        sample_json,
+                    ),
+                )
+
+    def observation_count(self) -> int:
+        return int(
+            self.connection.execute("SELECT COUNT(*) FROM observations").fetchone()[0]
+        )
 
     def observations(self) -> list[dict[str, Any]]:
         rows = self.connection.execute(
@@ -463,10 +912,8 @@ class RunLedger:
         lhs_backend: str,
         rhs_backend: str,
         result: AgreementResult,
-        *,
-        timing_eligible: bool,
-        ratio: float | None,
     ) -> None:
+        self._require_writable()
         payload = result.to_json()
         payload.update(
             {
@@ -474,19 +921,15 @@ class RunLedger:
                 "repetition": repetition,
                 "lhs_backend": lhs_backend,
                 "rhs_backend": rhs_backend,
-                "timing_eligible": timing_eligible,
-                "speedup_baseline_over_candidate": ratio,
             }
         )
         encoded = _json(payload)
         with self.connection:
             self.connection.execute(
-                """INSERT INTO agreements VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """INSERT INTO agreements VALUES (?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(case_key, repetition, lhs_backend, rhs_backend)
                    DO UPDATE SET status=excluded.status,
                                  success=excluded.success,
-                                 timing_eligible=excluded.timing_eligible,
-                                 ratio=excluded.ratio,
                                  agreement_json=excluded.agreement_json""",
                 (
                     case_key,
@@ -495,8 +938,6 @@ class RunLedger:
                     rhs_backend,
                     payload["status"],
                     int(result.success),
-                    int(timing_eligible),
-                    ratio,
                     encoded,
                 ),
             )
@@ -519,17 +960,73 @@ class RunLedger:
             for row in self.connection.execute("SELECT case_json FROM cases ORDER BY workload, case_key")
         ]
 
+    def timing_samples(self) -> list[dict[str, Any]]:
+        if self.schema_version == CAMPAIGN_SCHEMA_VERSION:
+            rows = self.connection.execute(
+                "SELECT sample_json FROM timing_samples "
+                "ORDER BY case_key, backend, repetition, variant, sample_index"
+            ).fetchall()
+            return [json.loads(row["sample_json"]) for row in rows]
+
+        # Schema-v1 observations carried one timing inline.  Normalize those
+        # rows in memory without altering the legacy database or fingerprint.
+        timeout_seconds = float(
+            self.manifest()["plan"]["execution"]["timeout_seconds"]
+        )
+        samples: list[dict[str, Any]] = []
+        for observation in self.observations():
+            internal = observation.get("internal_timing")
+            internal = internal if isinstance(internal, dict) else {}
+            target_wall_ns = observation.get("target_wall_ns")
+            target_cpu_ms = internal.get(
+                "marked_target_cpu_ms", internal.get("target_cpu_ms")
+            )
+            target_cpu_ns = (
+                int(round(float(target_cpu_ms) * 1_000_000))
+                if isinstance(target_cpu_ms, (int, float))
+                and not isinstance(target_cpu_ms, bool)
+                and target_cpu_ms >= 0
+                else None
+            )
+            samples.append(
+                {
+                    "case_key": observation["case_key"],
+                    "workload": observation["workload"],
+                    "backend": observation["backend"],
+                    "repetition": observation["repetition"],
+                    "variant": "standard",
+                    "sample_index": 0,
+                    "status": observation["status"],
+                    "timeout": observation.get("timeout") is True,
+                    "target_wall_ns": target_wall_ns,
+                    "target_cpu_ns": target_cpu_ns,
+                    "process_wall_ns": observation.get("process_wall_ns"),
+                    "timing_scope": str(
+                        internal.get("scope") or "legacy_v1_observation_target"
+                    ),
+                    "effective_timeout_seconds": timeout_seconds,
+                    "timeout_source": "legacy_campaign_ceiling",
+                    "wall_clock": internal.get("wall_clock"),
+                    "cpu_clock": internal.get("algorithm_clock"),
+                    "internal_timing": internal,
+                    "diagnostics": {"source_ledger_schema_version": 1},
+                }
+            )
+        return samples
+
     def snapshot(self) -> dict[str, Any]:
         self.connection.execute("BEGIN")
         try:
             return {
                 "schema_version": CAMPAIGN_SCHEMA_VERSION,
+                "source_ledger_schema_version": self.schema_version,
                 "fingerprint": self.fingerprint(),
                 "state": self.state(),
                 "manifest": self.manifest(),
                 "engines": self.engines(),
                 "cases": self.cases(),
                 "observations": self.observations(),
+                "timing_samples": self.timing_samples(),
                 "agreements": self.agreements(),
             }
         finally:

@@ -101,6 +101,7 @@ class SampleRequest:
     sample_index: int
     warmup: FieldSpec | None
     seed: int
+    jit_repetitions: int = 0
 
 
 @dataclass
@@ -116,6 +117,8 @@ class BackendContext:
     silex_backend: str = "default"
     environment: dict[str, str] = field(default_factory=dict)
     selected_operations: tuple[str, ...] = ()
+    jit_repetitions: int = 0
+    timeout_source: str = "campaign_ceiling"
 
 
 def run_fingerprint_payload(manifest: Any) -> dict[str, Any]:

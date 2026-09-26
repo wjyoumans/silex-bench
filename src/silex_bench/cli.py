@@ -18,11 +18,17 @@ from .campaign import (
     run_campaign,
 )
 from .configuration import RunOverrides, load_profile, load_suite, load_tools
-from .contracts import Observation
+from .contracts import CAMPAIGN_SCHEMA_VERSION, Observation
 from .ledger import RunLedger
 from .registry import builtin_registry
 from .reporting import generate_report
-from .presentation import render_campaign, render_doctor, render_list, render_plan
+from .presentation import (
+    render_campaign,
+    render_doctor,
+    render_list,
+    render_plan,
+    render_progress,
+)
 from .resources import builtin_names, resolve_path
 
 
@@ -177,6 +183,10 @@ def _load_plan(
 
 def _resume_plan(run_dir: Path, tools_path: Path | None) -> CampaignPlan:
     with RunLedger(run_dir.expanduser().absolute()) as ledger:
+        if ledger.schema_version != CAMPAIGN_SCHEMA_VERSION:
+            raise ValueError(
+                "campaign schema v1 ledgers are report-only and cannot be resumed"
+            )
         manifest = ledger.manifest()
     plan = manifest.get("plan", {})
     overrides = plan.get("overrides", {})
@@ -256,7 +266,6 @@ def _campaign_payload(
         "agreements": len(snapshot["agreements"]),
         "backend_status": summary.get("backend_status", []),
         "agreement_status": summary.get("agreement_status", []),
-        "aggregate_ratios": summary.get("aggregate_ratios", []),
         "failures": summary.get("failures", []),
         "report": report,
     }
@@ -281,26 +290,15 @@ def _human_output(command: str, payload: dict[str, Any]) -> str:
 def _run_with_progress(
     plan: CampaignPlan, run_dir: Path, *, resume: bool, enabled: bool
 ) -> dict[str, Any]:
-    terminal = enabled and sys.stdout.isatty()
-
     def update(observation: Observation, completed: int, total: int) -> None:
-        label = f"{observation.case_key}/{observation.backend}"
-        sys.stdout.write(
-            f"\r\x1b[2K[{completed}/{total}] {label}: {observation.status.value}"
-        )
-        sys.stdout.flush()
+        print(render_progress(observation, completed, total), flush=True)
 
-    try:
-        return run_campaign(
-            plan,
-            run_dir,
-            resume=resume,
-            progress=update if terminal else None,
-        )
-    finally:
-        if terminal:
-            sys.stdout.write("\n")
-            sys.stdout.flush()
+    return run_campaign(
+        plan,
+        run_dir,
+        resume=resume,
+        progress=update if enabled else None,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
