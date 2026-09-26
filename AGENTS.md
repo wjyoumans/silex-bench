@@ -9,7 +9,9 @@ These instructions govern automated work in this repository.
   PARI/GP, Hecke, and Magma.
 - The sibling `silex` repository owns native implementation, microbenchmarks,
   replay kernels, and native profiling tools. Do not duplicate them here.
-- The sibling `silex-devtools` repository owns reusable skills and context tools.
+- Bench owns its comparative guidance in
+  [docs/comparative-benchmarking.md](docs/comparative-benchmarking.md).
+  Development orchestration and task tracking live outside this repository.
 - Treat the historical source workspace outside this pilot as read-only source
   material. Read exact committed objects; never mutate that workspace.
 - Keep `runs/`, plots, caches, virtual environments, bytecode, credentials, and
@@ -52,7 +54,8 @@ cells, currently Magma S-units, must remain explicit and are not failures.
   explicit about stdout, stderr, timeout, spawn, and descendant cleanup.
 - Performance claims require the declared configuration, engine/source identity,
   CPU-affinity policy, machine-readable output, and an idle relevant SMT sibling.
-  Do not run final CPU-pinned measurements while other CPU-intensive work runs.
+  Do not run final timing while other CPU-intensive work runs, including other
+  agents' Silex or Bench builds and tests.
 - Use `check` to establish per-engine validity and pairwise agreement before
   interpreting `run` timings. A failed validation or agreement row is never a
   performance sample.
@@ -64,12 +67,13 @@ cells, currently Magma S-units, must remain explicit and are not failures.
 
 ## Host safety
 
-- Treat a Hermes profile, worktree, or process wrapper as workflow isolation,
-  not OS process isolation.
+- Treat agent sessions, worktrees, and process wrappers as workflow and
+  process-lifecycle mechanisms, not OS security boundaries.
 - Never run a nonzero signal experiment against PID `-1`, PID `0`, a negative
   process group, a parent/supervisor, the live compositor, `systemd --user`,
-  Hermes infrastructure, or other session-wide targets. Never invoke logout,
-  shutdown, reboot, or equivalent host/session actions from an agent task.
+  agent infrastructure, or other session-wide targets. Never
+  invoke logout, shutdown, reboot, or equivalent host/session actions from an
+  agent task.
 - The harness manages the lifecycle of trusted configured Silex, PARI, Hecke,
   and Magma executables; it is not an OS sandbox. Deliberately hostile code that
   kills its same-UID cleanup supervisor is out of scope for this harness.
@@ -82,8 +86,11 @@ cells, currently Magma S-units, must remain explicit and are not failures.
 
 ## Worktrees, staging, and commits
 
-- After the foundation commit, use one writing task, one repository, and one
-  Git worktree. Reviewers are read-only unless a correction task is authorized.
+- Use one writing task, one repository, and one Git worktree. Parallel agents
+  each own a separate worktree and task branch; reviewers are read-only unless
+  given a separate correction task.
+- Do not stash, reset, overwrite, or absorb pre-existing dirty work into an
+  unrelated task commit.
 - Add a focused failing regression before changing behavior, then run the
   focused test and complete unit suite.
 - Stage explicit paths; never use broad staging commands such as `git add .`.
