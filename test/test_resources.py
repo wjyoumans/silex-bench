@@ -37,10 +37,7 @@ class BuiltinResourceTests(unittest.TestCase):
         self.assertEqual(configuration["project"]["readme"], "README.md")
         self.assertEqual(
             configuration["project"]["license-files"],
-            [
-                "LICENSE", "NOTICE.md", "THIRD_PARTY_NOTICES.md",
-                "LICENSES/Apache-2.0.txt", "LICENSES/Silex-Devtools-NOTICE.md",
-            ],
+            ["LICENSE", "NOTICE.md", "THIRD_PARTY_NOTICES.md"],
         )
         for name in ("README.md", "LICENSE", "NOTICE.md", "THIRD_PARTY_NOTICES.md"):
             self.assertTrue((ROOT / name).is_file(), name)

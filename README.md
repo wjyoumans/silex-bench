@@ -13,9 +13,9 @@ faster, and how that relationship changes as inputs grow.
 
 ## AI-assisted development disclosure
 
-Silex and its companion repositories, Silex Bench and Silex Devtools, were
-built almost entirely with OpenAI Codex, initially using GPT-5.5 and later
-GPT-5.6, under the direction and review of William Youmans.
+Silex and its companion repository, Silex Bench, were built almost entirely
+with OpenAI Codex, initially using GPT-5.5 and later GPT-5.6, and are now
+developed with Anthropic Claude, under human direction and review.
 
 ## Project family
 

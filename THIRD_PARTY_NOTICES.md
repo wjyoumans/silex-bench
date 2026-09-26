@@ -57,13 +57,3 @@ The mathematical calls, proof expectations, and source versions used for
 comparison are documented in `docs/backend-contracts.md` and
 `docs/sunit-contract.md`. Those references identify provenance and behavior;
 they do not change the licensing of an external system.
-
-## Migrated Silex Devtools guidance
-
-`docs/comparative-benchmarking.md` retains its Apache-2.0 source license and
-copyright notice from the then-separate Silex Devtools repository at commit
-`ee316759d7493349245b429d1066381cef14a955`. See the retained
-[source notice and modification record](LICENSES/Silex-Devtools-NOTICE.md)
-and [Apache-2.0 license](LICENSES/Apache-2.0.txt). This preserves the applicable
-source obligations without changing Silex Bench's overall GPL-3.0-or-later
-license.

@@ -1,6 +1,3 @@
-<!-- SPDX-License-Identifier: Apache-2.0 -->
-<!-- Copyright 2026 William Youmans and contributors. -->
-<!-- Modified in 2026 from Silex Devtools; see ../LICENSES/Silex-Devtools-NOTICE.md. -->
 
 # Comparative benchmarking
 
@@ -177,11 +174,3 @@ Test registry/contract rejection, fake-engine success/failure/timeout paths,
 required-pair gates, ledger collision/resume behavior, and reports without
 requiring optional or proprietary engines. Live all-adapter checks are opt-in
 and need a host with access to the Julia depot and any Magma license.
-
-## Origin
-
-Adapted from the then-separate Silex Devtools reference at commit
-`ee316759d7493349245b429d1066381cef14a955`, with material changes for current
-Bench ownership and contracts. Copyright 2026 William Youmans and contributors.
-The Apache-2.0 source license and notice remain in
-[LICENSES](../LICENSES/Silex-Devtools-NOTICE.md).

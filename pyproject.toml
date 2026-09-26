@@ -11,7 +11,6 @@ requires-python = ">=3.11"
 license = "GPL-3.0-or-later"
 license-files = [
   "LICENSE", "NOTICE.md", "THIRD_PARTY_NOTICES.md",
-  "LICENSES/Apache-2.0.txt", "LICENSES/Silex-Devtools-NOTICE.md",
 ]
 authors = [{name = "William Youmans"}]
 classifiers = [

@@ -8,9 +8,9 @@ comparisons between Silex and other mathematical systems.
 
 ## AI-assisted development disclosure
 
-Silex and its companion repositories, Silex Bench and Silex Devtools, were
-built almost entirely with OpenAI Codex, initially using GPT-5.5 and later
-GPT-5.6, under the direction and review of William Youmans.
+Silex and its companion repository, Silex Bench, were built almost entirely
+with OpenAI Codex, initially using GPT-5.5 and later GPT-5.6, and are now
+developed with Anthropic Claude, under human direction and review.
 
 ## Changes in 0.1.1
 
@@ -48,8 +48,6 @@ replace Silex's native tests. This preparation publishes no benchmark results.
 
 - [Silex](https://github.com/wjyoumans/silex) provides the native library.
 - Silex Bench owns its [comparative guidance](docs/comparative-benchmarking.md).
-  Migrated Devtools guidance retains its
-  [Apache-2.0 attribution](LICENSES/Silex-Devtools-NOTICE.md).
 
 Silex Bench is distributed under [GPL-3.0-or-later](LICENSE). Project notices
 are in [NOTICE.md](NOTICE.md), and upstream attribution is in
