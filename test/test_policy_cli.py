@@ -265,6 +265,39 @@ class CampaignPolicyTests(unittest.TestCase):
             {ObservationStatus.UNAVAILABLE.value},
         )
 
+    def test_require_all_adapters_promotes_optional_disagreement_to_failure(self) -> None:
+        registry = synthetic_registry(
+            synthetic_backend("silex"),
+            synthetic_backend("pari"),
+            synthetic_backend("magma", discriminant="7", trust_result=True),
+        )
+        backends = ("silex", "pari", "magma")
+        optional_plan = self._plan(registry, backends=backends)
+        strict_plan = self._plan(
+            registry,
+            backends=backends,
+            overrides=RunOverrides(require_all_adapters=True),
+        )
+
+        for policy, plan, expected_state in (
+            ("optional", optional_plan, "complete"),
+            ("strict", strict_plan, "failed"),
+        ):
+            with self.subTest(policy=policy):
+                snapshot = run_campaign(plan, self.root / f"{policy}-run")
+                self.assertEqual(snapshot["state"], expected_state)
+                self.assertEqual(
+                    {
+                        (row["lhs_backend"], row["rhs_backend"]): row["status"]
+                        for row in snapshot["agreements"]
+                    },
+                    {
+                        ("silex", "pari"): AgreementStatus.AGREE.value,
+                        ("silex", "magma"): AgreementStatus.DISAGREE.value,
+                        ("pari", "magma"): AgreementStatus.DISAGREE.value,
+                    },
+                )
+
     def test_unsupported_cells_are_explicit_and_do_not_fail_strict_mode(self) -> None:
         registry = synthetic_registry(
             synthetic_backend("silex"),
