@@ -58,6 +58,19 @@ trusted local dependencies. Sealed executables, process groups, subreaping,
 and cleanup improve lifecycle integrity but do not isolate malicious same-UID
 programs.
 
+When a CPU is pinned, only the target is placed on the requested CPU (through
+`taskset`); the process supervisor itself runs on the remaining CPUs, chosen
+by reading the target CPU's SMT sibling set from
+`/sys/devices/system/cpu/cpuN/topology/thread_siblings_list`, so its own
+scheduling and control-channel activity does not compete with the target for
+that CPU's execution resources. The supervisor also waits for the target
+event-driven (on the target's exit and on its own termination signals)
+instead of polling. Where the available CPU set is too small to exclude the
+full sibling set, the supervisor falls back in stages: first to any CPU
+outside the target alone (still sharing SMT execution resources with it),
+and only when the target CPU is the sole available CPU does the supervisor
+share it, as it always did before this separation existed.
+
 The primary ordinary comparison clock is each backend's internal wall
 interval around the exact target operation. For class and unit groups, every
 adapter constructs the field and maximal order before starting that interval;

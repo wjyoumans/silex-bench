@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, cast
 from unittest import mock
 
+from silex_bench import process as process_module
 from silex_bench.process import (
     MAX_PROTOCOL_INPUT_BYTES,
     TARGET_NONCE_PLACEHOLDER,
@@ -21,6 +22,21 @@ from silex_bench.process import (
     run_marked_process,
     run_process,
 )
+
+
+def _parse_cpu_list(text: str) -> set[int]:
+    """Parse a Linux cpulist (e.g. "1-3,7") as read from /proc or sysfs."""
+    values: set[int] = set()
+    for token in text.strip().split(","):
+        token = token.strip()
+        if not token:
+            continue
+        if "-" in token:
+            start, end = token.split("-", 1)
+            values.update(range(int(start), int(end) + 1))
+        else:
+            values.add(int(token))
+    return values
 
 
 class ProcessTests(unittest.TestCase):
@@ -1229,6 +1245,113 @@ time.sleep(2)
             self.assertFalse(result["available"])
             self.assertFalse(result["success"])
             self.assertIn("taskset", result["error"])
+
+    def test_supervisor_runs_off_the_target_cpu_and_its_smt_siblings(self) -> None:
+        if not hasattr(os, "sched_getaffinity"):
+            self.skipTest("sched_getaffinity is unavailable")
+        if shutil.which("taskset") is None:
+            self.skipTest("taskset is unavailable")
+        available_cpus = sorted(os.sched_getaffinity(0))
+        if len(available_cpus) < 2:
+            self.skipTest("test requires at least two available CPUs")
+        cpu = min(available_cpus)
+        expected_supervisor_cpus = set(
+            process_module._supervisor_housekeeping_cpus(cpu, available_cpus)
+        )
+        if cpu in expected_supervisor_cpus:
+            self.skipTest(
+                "no housekeeping CPU is available on this host (single-CPU "
+                "affinity, or the target CPU and all its SMT siblings "
+                "exhaust the available set); the supervisor necessarily "
+                "shares the target CPU in that fallback"
+            )
+
+        # The child reads Cpus_allowed_list for itself and for its direct
+        # parent (the supervisor) from /proc while both are still alive,
+        # since the supervisor is fully reaped by the time run_marked_process
+        # returns.
+        child = """
+import os
+import sys
+
+
+def cpus_allowed(pid):
+    with open(f"/proc/{pid}/status") as handle:
+        for line in handle:
+            if line.startswith("Cpus_allowed_list:"):
+                return line.split(":", 1)[1].strip()
+    return ""
+
+
+sys.stdin.readline()
+print("SUPERVISOR_CPUS:" + cpus_allowed(os.getppid()), flush=True)
+print("TARGET_CPUS:" + cpus_allowed(os.getpid()), flush=True)
+print("READY", flush=True)
+nonce = sys.stdin.readline().strip()
+print("TARGET:" + nonce, flush=True)
+sys.stdin.readline()
+"""
+        with tempfile.TemporaryDirectory() as temporary:
+            result = run_marked_process(
+                [sys.executable, "-u", "-c", child],
+                ready_input="start\n",
+                target_input=TARGET_NONCE_PLACEHOLDER + "\n",
+                final_input="finish\n",
+                ready_marker="READY",
+                target_marker="TARGET",
+                timeout=2.0,
+                cwd=Path(temporary),
+                cpu=cpu,
+            )
+
+        self.assertTrue(result["success"], result)
+        self.assertEqual(result["effective_affinity"], [cpu])
+
+        lines = dict(
+            line.split(":", 1) for line in result["stdout"].splitlines() if ":" in line
+        )
+        target_cpus = _parse_cpu_list(lines["TARGET_CPUS"])
+        supervisor_cpus = _parse_cpu_list(lines["SUPERVISOR_CPUS"])
+
+        self.assertEqual(target_cpus, {cpu})
+        self.assertNotIn(cpu, supervisor_cpus)
+        siblings = process_module._read_thread_siblings(cpu) or set()
+        self.assertTrue(supervisor_cpus.isdisjoint(siblings))
+        self.assertEqual(supervisor_cpus, expected_supervisor_cpus)
+
+
+class SupervisorHousekeepingCpuTests(unittest.TestCase):
+    """Unit coverage for the fallback tiers, independent of host topology."""
+
+    def test_excludes_target_and_smt_siblings_when_available(self) -> None:
+        with mock.patch(
+            "silex_bench.process._read_thread_siblings", return_value={0, 12}
+        ):
+            result = process_module._supervisor_housekeeping_cpus(0, list(range(24)))
+        self.assertNotIn(0, result)
+        self.assertNotIn(12, result)
+        self.assertTrue(result)
+
+    def test_falls_back_to_sibling_when_only_the_smt_pair_is_available(self) -> None:
+        with mock.patch(
+            "silex_bench.process._read_thread_siblings", return_value={0, 12}
+        ):
+            result = process_module._supervisor_housekeeping_cpus(0, [0, 12])
+        self.assertEqual(result, (12,))
+
+    def test_falls_back_to_shared_cpu_when_it_is_the_only_one_available(self) -> None:
+        with mock.patch(
+            "silex_bench.process._read_thread_siblings", return_value={0, 12}
+        ):
+            result = process_module._supervisor_housekeeping_cpus(0, [0])
+        self.assertEqual(result, (0,))
+
+    def test_treats_unknown_topology_as_no_siblings(self) -> None:
+        with mock.patch(
+            "silex_bench.process._read_thread_siblings", return_value=None
+        ):
+            result = process_module._supervisor_housekeeping_cpus(0, [0, 1, 2])
+        self.assertEqual(result, (1, 2))
 
 
 if __name__ == "__main__":

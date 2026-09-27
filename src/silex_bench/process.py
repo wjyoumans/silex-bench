@@ -33,12 +33,15 @@ _SUPERVISOR_HANDSHAKE_SECONDS = 5.0
 _SUPERVISOR_FDS_ENV = "SILEX_BENCH_INTERNAL_SUPERVISOR_FDS"
 _SUPERVISOR_EXECUTABLE_ENV = "SILEX_BENCH_INTERNAL_SUPERVISOR_EXECUTABLE"
 _SUPERVISOR_CONTROL_FD_ENV = "SILEX_BENCH_INTERNAL_SUPERVISOR_CONTROL_FD"
-_SUPERVISOR_CPU_ENV = "SILEX_BENCH_INTERNAL_SUPERVISOR_CPU"
+# Carries the supervisor's own housekeeping CPU set (comma-separated, may be
+# empty), not the target CPU: the target is pinned separately through
+# taskset. See _supervisor_housekeeping_cpus for how this set is chosen.
+_SUPERVISOR_AFFINITY_ENV = "SILEX_BENCH_INTERNAL_SUPERVISOR_AFFINITY"
 _SUPERVISOR_ENV_KEYS = {
     _SUPERVISOR_FDS_ENV,
     _SUPERVISOR_EXECUTABLE_ENV,
     _SUPERVISOR_CONTROL_FD_ENV,
-    _SUPERVISOR_CPU_ENV,
+    _SUPERVISOR_AFFINITY_ENV,
 }
 
 # Python 3.11 exposes ``os.memfd_create`` but not these fcntl names.  The
@@ -57,6 +60,7 @@ _IMMUTABLE_MEMFD_SEALS = (
 _SUPERVISOR_SOURCE = r"""
 import ctypes
 import os
+import select
 import signal
 import subprocess
 import sys
@@ -69,7 +73,11 @@ MAX_CHILDREN_BYTES = 1 << 20
 FDS_ENV = "SILEX_BENCH_INTERNAL_SUPERVISOR_FDS"
 EXECUTABLE_ENV = "SILEX_BENCH_INTERNAL_SUPERVISOR_EXECUTABLE"
 CONTROL_FD_ENV = "SILEX_BENCH_INTERNAL_SUPERVISOR_CONTROL_FD"
-CPU_ENV = "SILEX_BENCH_INTERNAL_SUPERVISOR_CPU"
+AFFINITY_ENV = "SILEX_BENCH_INTERNAL_SUPERVISOR_AFFINITY"
+# Only used as a last-resort heartbeat when os.pidfd_open is unavailable
+# (pre-5.3 kernel or pre-3.9 Python): the primary wait is event-driven via
+# the SIGCHLD/SIGTERM/SIGINT/SIGHUP self-pipe below.
+FALLBACK_WAIT_SECONDS = 0.2
 
 stop_requested = False
 
@@ -78,6 +86,14 @@ def request_stop(signum, frame):
     del signum, frame
     global stop_requested
     stop_requested = True
+
+
+def ignore_child_exit(signum, frame):
+    # No-op: registering a handler (instead of leaving SIGCHLD at its default
+    # disposition) makes Python write to the wakeup self-pipe on child exit,
+    # which is all this supervisor uses SIGCHLD for. Reaping still happens
+    # explicitly via os.waitpid.
+    del signum, frame
 
 
 def report(control_fd, message):
@@ -185,6 +201,13 @@ def finish(returncode):
 def main():
     for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(signum, request_stop)
+    # SIGCHLD needs a registered handler (not the default disposition) for
+    # Python to write to the wakeup self-pipe when a child exits.
+    signal.signal(signal.SIGCHLD, ignore_child_exit)
+    wakeup_read, wakeup_write = os.pipe()
+    os.set_blocking(wakeup_read, False)
+    os.set_blocking(wakeup_write, False)
+    signal.set_wakeup_fd(wakeup_write)
 
     control_fd = int(os.environ[CONTROL_FD_ENV])
     parent_pid = os.getppid()
@@ -202,12 +225,20 @@ def main():
     fd_text = os.environ.get(FDS_ENV, "")
     inherited_fds = tuple(int(value) for value in fd_text.split(",") if value)
     target_executable = os.environ[EXECUTABLE_ENV]
-    cpu_text = os.environ.get(CPU_ENV, "")
-    if cpu_text:
-        os.sched_setaffinity(0, {int(cpu_text)})
+    # This pins the supervisor itself, away from the target CPU (chosen by
+    # _supervisor_housekeeping_cpus in the parent); the target is pinned to
+    # the requested CPU separately, through taskset. An empty value means no
+    # housekeeping CPU could be found (see that function's fallback tiers),
+    # so the supervisor keeps its inherited affinity.
+    affinity_text = os.environ.get(AFFINITY_ENV, "")
+    housekeeping_cpus = {
+        int(value) for value in affinity_text.split(",") if value
+    }
+    if housekeeping_cpus:
+        os.sched_setaffinity(0, housekeeping_cpus)
 
     target_env = dict(os.environ)
-    for key in (FDS_ENV, EXECUTABLE_ENV, CONTROL_FD_ENV, CPU_ENV):
+    for key in (FDS_ENV, EXECUTABLE_ENV, CONTROL_FD_ENV, AFFINITY_ENV):
         target_env.pop(key, None)
     if not sys.argv[1:]:
         report(control_fd, "ERROR supervisor target command is empty")
@@ -226,6 +257,30 @@ def main():
     report(control_fd, f"PID {target.pid}")
     os.close(control_fd)
 
+    try:
+        target_pidfd = os.pidfd_open(target.pid, 0)
+    except (AttributeError, OSError):
+        target_pidfd = None
+
+    def wait_for_event():
+        # Blocks until the target exits (pidfd readable), a signal we
+        # registered fires (self-pipe readable via set_wakeup_fd), or, only
+        # when pidfd_open is unavailable, the bounded fallback elapses. This
+        # replaces the fixed-rate poll that previously ran for the target's
+        # entire lifetime, including the timed interval.
+        wait_fds = [wakeup_read]
+        if target_pidfd is not None:
+            wait_fds.append(target_pidfd)
+            timeout = None
+        else:
+            timeout = FALLBACK_WAIT_SECONDS
+        select.select(wait_fds, [], [], timeout)
+        try:
+            while os.read(wakeup_read, 4096):
+                pass
+        except BlockingIOError:
+            pass
+
     while True:
         if stop_requested:
             terminate_descendants()
@@ -241,7 +296,13 @@ def main():
                     break
             if not descendants():
                 finish(returncode)
-        time.sleep(0.005)
+            # The target has already exited; this only waits out orphaned
+            # descendants during subreaper cleanup, so it no longer runs
+            # during the timed interval. A short poll here is simpler than a
+            # pidfd per descendant and does not affect measurement.
+            time.sleep(0.005)
+            continue
+        wait_for_event()
 
 
 try:
@@ -415,16 +476,20 @@ def trusted_cpu_launcher_identity() -> dict[str, str]:
     return {"executable": path, "sha256": digest}
 
 
-def _with_cpu(cmd: list[str], cpu: int | None) -> list[str]:
-    if cpu is None:
-        return cmd
+def _current_available_cpus() -> list[int]:
     try:
-        available_cpus = sorted(os.sched_getaffinity(0))
+        return sorted(os.sched_getaffinity(0))
     except (AttributeError, OSError) as exc:
         raise OSError(
             "CPU affinity requested but the current process affinity "
             f"is unavailable: {exc}"
         ) from exc
+
+
+def _with_cpu(cmd: list[str], cpu: int | None) -> list[str]:
+    if cpu is None:
+        return cmd
+    available_cpus = _current_available_cpus()
     if cpu not in available_cpus:
         raise OSError(
             f"requested CPU {cpu} is outside the current process affinity "
@@ -432,6 +497,77 @@ def _with_cpu(cmd: list[str], cpu: int | None) -> list[str]:
         )
     taskset = trusted_system_executable("taskset")
     return [taskset, "-c", str(cpu), *cmd]
+
+
+def _read_thread_siblings(cpu: int) -> set[int] | None:
+    """Read a CPU's SMT sibling set from sysfs topology.
+
+    Returns None when the topology file is absent or unreadable (for
+    example, a non-Linux-standard sysfs layout, a restricted mount, or a
+    virtualized CPU topology that does not expose it), so callers can fall
+    back to treating the CPU as having no known siblings.
+    """
+    path = Path(f"/sys/devices/system/cpu/cpu{cpu}/topology/thread_siblings_list")
+    try:
+        text = path.read_text()
+    except OSError:
+        return None
+    siblings: set[int] = set()
+    for token in text.strip().split(","):
+        token = token.strip()
+        if not token:
+            continue
+        if "-" in token:
+            start_text, _, end_text = token.partition("-")
+            try:
+                start, end = int(start_text), int(end_text)
+            except ValueError:
+                continue
+            siblings.update(range(start, end + 1))
+        else:
+            try:
+                siblings.add(int(token))
+            except ValueError:
+                continue
+    return siblings or None
+
+
+def _supervisor_housekeeping_cpus(
+    cpu: int, available_cpus: list[int]
+) -> tuple[int, ...]:
+    """Choose CPUs for the supervisor process that avoid the measured CPU.
+
+    The supervisor's own scheduling activity (its blocking wait, cleanup,
+    and control-channel I/O) must not compete with the pinned target for the
+    target CPU's execution resources, including its SMT sibling(s): sharing
+    a physical core with an SMT sibling still contends for its execution
+    units and caches. `cpu` is the target CPU; `available_cpus` is the set
+    the launching process may itself be pinned to (for example, under an
+    external cpuset).
+
+    Falls back in stages when the available set is too small to exclude the
+    full sibling set:
+      1. available_cpus minus (cpu and its SMT siblings), the normal case;
+      2. available_cpus minus cpu alone, if (1) is empty: this still shares
+         SMT execution resources with the target (a 2-CPU SMT pair is the
+         common case here), but keeps the supervisor off the exact target
+         logical CPU;
+      3. available_cpus unchanged, only when cpu is the sole available CPU:
+         the supervisor necessarily shares it with the target, as it did
+         before this housekeeping split existed.
+    Returns a sorted tuple; an empty result never occurs because tier 3
+    always returns at least {cpu}.
+    """
+    available = set(available_cpus)
+    siblings = _read_thread_siblings(cpu)
+    excluded = {cpu} | (siblings or set())
+    tier1 = available - excluded
+    if tier1:
+        return tuple(sorted(tier1))
+    tier2 = available - {cpu}
+    if tier2:
+        return tuple(sorted(tier2))
+    return tuple(sorted(available))
 
 
 def _resolved_command_path(
@@ -625,6 +761,11 @@ def _pinned_command(
     directory_argument_descriptors: dict[int, int],
 ) -> dict[str, Any]:
     display = _with_cpu(cmd, cpu)
+    supervisor_cpus: tuple[int, ...] | None = None
+    if cpu is not None:
+        supervisor_cpus = _supervisor_housekeeping_cpus(
+            cpu, _current_available_cpus()
+        )
     backend_fd, backend_digest, backend_path = _snapshot_executable(
         cmd[0], cwd=cwd, env=env
     )
@@ -702,6 +843,7 @@ def _pinned_command(
             "launcher_path": launcher_path,
             "launcher_digest": launcher_digest,
             "immutable_inputs": immutable_inputs,
+            "supervisor_cpus": supervisor_cpus,
         }
     except BaseException:
         for descriptor in descriptors:
@@ -838,7 +980,6 @@ def _supervised_popen(
     cwd: Path,
     env: dict[str, str] | None,
     stdin: Any,
-    cpu: int | None,
     bufsize: int = -1,
     deadline: float | None = None,
 ) -> tuple[subprocess.Popen[bytes], int]:
@@ -853,7 +994,12 @@ def _supervised_popen(
         )
         supervisor_environment[_SUPERVISOR_EXECUTABLE_ENV] = pinned["executable"]
         supervisor_environment[_SUPERVISOR_CONTROL_FD_ENV] = str(control_write)
-        supervisor_environment[_SUPERVISOR_CPU_ENV] = "" if cpu is None else str(cpu)
+        supervisor_cpus = pinned.get("supervisor_cpus")
+        supervisor_environment[_SUPERVISOR_AFFINITY_ENV] = (
+            ""
+            if not supervisor_cpus
+            else ",".join(str(value) for value in supervisor_cpus)
+        )
         supervisor_command = [
             sys.executable,
             "-I",
@@ -989,7 +1135,6 @@ def run_process(
                 cwd=cwd,
                 env=env,
                 stdin=subprocess.PIPE if stdin is not None else None,
-                cpu=cpu,
                 deadline=deadline,
             )
         finally:
@@ -1275,7 +1420,6 @@ def run_marked_process(
                 cwd=cwd,
                 env=env,
                 stdin=subprocess.PIPE,
-                cpu=cpu,
                 bufsize=0,
                 deadline=deadline,
             )
