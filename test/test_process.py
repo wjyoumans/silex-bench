@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -37,6 +38,20 @@ def _parse_cpu_list(text: str) -> set[int]:
         else:
             values.add(int(token))
     return values
+
+
+def _load_supervisor_namespace() -> dict[str, Any]:
+    """Exec the embedded supervisor source into a fresh namespace.
+
+    ``__name__`` is deliberately not ``"__main__"``, so the module-level
+    ``main()`` call at the bottom of the source does not run; the namespace's
+    functions (``direct_children``, ``handle_stop_request``, and so on) can
+    then be called and monkeypatched directly, without spawning a real
+    supervisor subprocess or touching this test process's own signal state.
+    """
+    namespace: dict[str, Any] = {"__name__": "test_supervisor_source"}
+    exec(compile(process_module._SUPERVISOR_SOURCE, "<supervisor>", "exec"), namespace)
+    return namespace
 
 
 class ProcessTests(unittest.TestCase):
@@ -1352,6 +1367,193 @@ class SupervisorHousekeepingCpuTests(unittest.TestCase):
         ):
             result = process_module._supervisor_housekeeping_cpus(0, [0, 1, 2])
         self.assertEqual(result, (1, 2))
+
+
+class SupervisorSourceDescendantTests(unittest.TestCase):
+    """Mocked coverage of the embedded supervisor's own functions (T-042 M2, L7).
+
+    These exec() the supervisor source (see _load_supervisor_namespace) so
+    the fail-closed startup check, the multi-thread descendant walk, and the
+    stop-path fallback kill can be exercised directly, without depending on
+    a specific kernel's /proc support or spawning a real supervisor process.
+    """
+
+    def test_missing_own_children_file_fails_closed_at_startup(self) -> None:
+        namespace = _load_supervisor_namespace()
+        pid = os.getpid()
+        missing_path = f"/proc/{pid}/task/{pid}/children"
+        real_open = os.open
+
+        def fake_open(path, flags, *args, **kwargs):
+            if path == missing_path:
+                raise FileNotFoundError(path)
+            return real_open(path, flags, *args, **kwargs)
+
+        read_fd, write_fd = os.pipe()
+        try:
+            environment = {process_module._SUPERVISOR_CONTROL_FD_ENV: str(write_fd)}
+            with mock.patch.object(os, "open", side_effect=fake_open), mock.patch.object(
+                os, "_exit", side_effect=SystemExit
+            ) as exit_mock, mock.patch.dict(os.environ, environment, clear=False):
+                with self.assertRaises(SystemExit):
+                    namespace["main"]()
+            exit_mock.assert_called_once_with(126)
+            message = os.read(read_fd, 256).decode("ascii")
+            self.assertIn("ERROR", message)
+            self.assertIn("CONFIG_PROC_CHILDREN", message)
+        finally:
+            os.close(read_fd)
+            os.close(write_fd)
+
+    def test_has_children_support_reflects_the_probe_file(self) -> None:
+        namespace = _load_supervisor_namespace()
+        self.assertTrue(namespace["has_children_support"]())
+
+        pid = os.getpid()
+        missing_path = f"/proc/{pid}/task/{pid}/children"
+        real_open = os.open
+
+        def fake_open(path, flags, *args, **kwargs):
+            if path == missing_path:
+                raise FileNotFoundError(path)
+            return real_open(path, flags, *args, **kwargs)
+
+        with mock.patch.object(os, "open", side_effect=fake_open):
+            self.assertFalse(namespace["has_children_support"]())
+
+    def test_direct_children_enumerates_every_thread_not_only_the_leader(self) -> None:
+        namespace = _load_supervisor_namespace()
+        pid = 987654
+        task_root = f"/proc/{pid}/task"
+        children_by_path = {
+            f"/proc/{pid}/task/{pid}/children": b"111 222 \n",
+            f"/proc/{pid}/task/222222/children": b"333\n",
+        }
+        real_listdir = os.listdir
+        real_open = os.open
+        real_read = os.read
+        real_close = os.close
+        fd_paths: dict[int, str] = {}
+        next_fd = 900_000
+
+        def fake_listdir(path):
+            if path == task_root:
+                return [str(pid), "222222"]
+            return real_listdir(path)
+
+        def fake_open(path, flags, *args, **kwargs):
+            nonlocal next_fd
+            if path in children_by_path:
+                fd = next_fd
+                next_fd += 1
+                fd_paths[fd] = path
+                return fd
+            return real_open(path, flags, *args, **kwargs)
+
+        def fake_read(fd, size):
+            if fd in fd_paths:
+                return children_by_path[fd_paths[fd]]
+            return real_read(fd, size)
+
+        def fake_close(fd):
+            if fd in fd_paths:
+                del fd_paths[fd]
+                return
+            real_close(fd)
+
+        with mock.patch.object(
+            os, "listdir", side_effect=fake_listdir
+        ), mock.patch.object(os, "open", side_effect=fake_open), mock.patch.object(
+            os, "read", side_effect=fake_read
+        ), mock.patch.object(
+            os, "close", side_effect=fake_close
+        ):
+            children = namespace["direct_children"](pid)
+
+        self.assertEqual(sorted(children), [111, 222, 333])
+
+    def test_kill_target_directly_signals_the_pid_and_its_escaped_process_group(
+        self,
+    ) -> None:
+        # A pgid distinct from the supervisor's own group models a target
+        # that called setsid, forming its own session/group.
+        namespace = _load_supervisor_namespace()
+        calls: list[tuple[str, int, int]] = []
+
+        with mock.patch.object(
+            os, "getpgid", return_value=555
+        ), mock.patch.object(os, "getpgrp", return_value=1), mock.patch.object(
+            os, "kill", side_effect=lambda pid, sig: calls.append(("kill", pid, sig))
+        ), mock.patch.object(
+            os, "killpg", side_effect=lambda pgid, sig: calls.append(("killpg", pgid, sig))
+        ):
+            namespace["kill_target_directly"](4242)
+
+        self.assertIn(("kill", 4242, signal.SIGKILL), calls)
+        self.assertIn(("killpg", 555, signal.SIGKILL), calls)
+
+    def test_kill_target_directly_does_not_killpg_its_own_shared_group(self) -> None:
+        # The common case: the target has not called setsid, so its pgid is
+        # the supervisor's own. killpg-ing that group would kill the
+        # supervisor itself before terminate_descendants() can walk /proc for
+        # descendants that escaped into a different session (see the
+        # regression this guards against: T-047 review, real-process setsid
+        # and double-fork descendant tests).
+        namespace = _load_supervisor_namespace()
+        with mock.patch.object(
+            os, "getpgid", return_value=777
+        ), mock.patch.object(os, "getpgrp", return_value=777), mock.patch.object(
+            os, "kill"
+        ) as kill, mock.patch.object(os, "killpg") as killpg:
+            namespace["kill_target_directly"](4242)
+
+        kill.assert_called_once_with(4242, signal.SIGKILL)
+        killpg.assert_not_called()
+
+    def test_kill_target_directly_tolerates_an_already_reaped_target(self) -> None:
+        namespace = _load_supervisor_namespace()
+        with mock.patch.object(
+            os, "getpgid", side_effect=ProcessLookupError
+        ), mock.patch.object(
+            os, "kill", side_effect=ProcessLookupError
+        ), mock.patch.object(os, "killpg") as killpg:
+            namespace["kill_target_directly"](4242)  # must not raise
+        killpg.assert_not_called()
+
+    def test_stop_path_kills_target_directly_before_descendant_cleanup(self) -> None:
+        namespace = _load_supervisor_namespace()
+        order: list[str] = []
+        namespace["kill_target_directly"] = lambda pid: order.append(f"kill:{pid}")
+        namespace["terminate_descendants"] = lambda: order.append("terminate") or True
+
+        with mock.patch.object(os, "_exit", side_effect=SystemExit) as exit_mock:
+            with self.assertRaises(SystemExit):
+                namespace["handle_stop_request"](4242)
+
+        self.assertEqual(order, ["kill:4242", "terminate"])
+        exit_mock.assert_called_once_with(124)
+
+    def test_stop_path_cleanup_failure_exits_once_without_a_second_full_pass(
+        self,
+    ) -> None:
+        namespace = _load_supervisor_namespace()
+        terminate_calls: list[int] = []
+
+        def failing_terminate() -> None:
+            terminate_calls.append(1)
+            raise RuntimeError("process descendants survived bounded cleanup")
+
+        namespace["kill_target_directly"] = lambda pid: None
+        namespace["terminate_descendants"] = failing_terminate
+
+        with mock.patch.object(os, "_exit", side_effect=SystemExit) as exit_mock:
+            with self.assertRaises(SystemExit):
+                namespace["handle_stop_request"](4242)
+
+        # The stop path must not retry the (already exhausted) cleanup budget
+        # a second time; see T-042 review L7.
+        self.assertEqual(len(terminate_calls), 1)
+        exit_mock.assert_called_once_with(126)
 
 
 if __name__ == "__main__":

@@ -58,6 +58,21 @@ trusted local dependencies. Sealed executables, process groups, subreaping,
 and cleanup improve lifecycle integrity but do not isolate malicious same-UID
 programs.
 
+At startup the supervisor requires `/proc/<pid>/task/<pid>/children`
+(`CONFIG_PROC_CHILDREN`); without it, it exits with an error (code 126)
+instead of silently treating every process as childless for its whole
+lifetime. Live descendant enumeration reads every thread's children file
+under `/proc/<pid>/task/*/children`, not only the thread-group leader's, so a
+child forked by a non-leader thread is not missed. On a stop request
+(timeout or interruption), the supervisor first sends `SIGKILL` straight to
+the known target PID and its own process group, independent of that
+enumeration, then still runs one bounded enumeration-and-kill pass (up to 32
+rounds of a 2 ms freeze-and-confirm loop, then a single 0.75 s hard-kill
+loop, about 0.82 s worst case) to confirm and reap the wider descendant tree;
+that pass is not retried a second time on failure. The harness's own stop
+path waits long enough for that single pass to finish before forcing the
+supervisor's process group closed itself.
+
 When a CPU is pinned, only the target is placed on the requested CPU (through
 `taskset`); the process supervisor itself runs on the remaining CPUs, chosen
 by reading the target CPU's SMT sibling set from

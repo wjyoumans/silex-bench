@@ -30,6 +30,15 @@ TARGET_NONCE_PLACEHOLDER = "__SILEX_BENCH_TARGET_NONCE__"
 _READ_CHUNK_BYTES = 65536
 _SUPERVISOR_CONTROL_BYTES = 128
 _SUPERVISOR_HANDSHAKE_SECONDS = 5.0
+# On a stop request, the embedded supervisor now spends its bounded cleanup
+# budget at most once (see handle_stop_request/terminate_descendants in
+# _SUPERVISOR_SOURCE): up to 32 rounds of a 2 ms freeze-and-confirm loop
+# (about 0.07 s), then a single 0.75 s hard-kill loop, for a worst case of
+# about 0.82 s before the supervisor exits. This wait must clear that worst
+# case with margin so the harness does not give up, and SIGKILL the
+# supervisor's process group directly, before the supervisor's own bounded
+# cleanup has had a chance to finish (T-042 review L7).
+_SUPERVISOR_STOP_WAIT_SECONDS = 1.5
 _SUPERVISOR_FDS_ENV = "SILEX_BENCH_INTERNAL_SUPERVISOR_FDS"
 _SUPERVISOR_EXECUTABLE_ENV = "SILEX_BENCH_INTERNAL_SUPERVISOR_EXECUTABLE"
 _SUPERVISOR_CONTROL_FD_ENV = "SILEX_BENCH_INTERNAL_SUPERVISOR_CONTROL_FD"
@@ -103,20 +112,46 @@ def report(control_fd, message):
         offset += os.write(control_fd, payload[offset:])
 
 
-def direct_children(pid):
+def has_children_support():
+    # /proc/<pid>/task/<pid>/children only exists with CONFIG_PROC_CHILDREN.
+    # Checked once at startup so the supervisor fails closed instead of
+    # silently treating every process as childless for its whole lifetime.
+    pid = os.getpid()
     path = f"/proc/{pid}/task/{pid}/children"
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0))
     try:
-        payload = os.read(descriptor, MAX_CHILDREN_BYTES + 1)
-    finally:
-        os.close(descriptor)
-    if len(payload) > MAX_CHILDREN_BYTES:
-        raise RuntimeError("process descendant list exceeds its byte limit")
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0))
+    except (FileNotFoundError, ProcessLookupError):
+        return False
+    os.close(descriptor)
+    return True
+
+
+def direct_children(pid):
+    # Reads every thread's children file, not only the thread-group leader's
+    # (task/<pid>/children): a child forked by a non-leader thread is
+    # otherwise invisible until it is reparented.
+    task_root = f"/proc/{pid}/task"
+    try:
+        thread_ids = os.listdir(task_root)
+    except (FileNotFoundError, ProcessLookupError, NotADirectoryError):
+        return []
     result = []
-    for token in payload.split():
-        value = int(token)
-        if value > 0:
-            result.append(value)
+    for thread_id in thread_ids:
+        path = f"/proc/{pid}/task/{thread_id}/children"
+        try:
+            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0))
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        try:
+            payload = os.read(descriptor, MAX_CHILDREN_BYTES + 1)
+        finally:
+            os.close(descriptor)
+        if len(payload) > MAX_CHILDREN_BYTES:
+            raise RuntimeError("process descendant list exceeds its byte limit")
+        for token in payload.split():
+            value = int(token)
+            if value > 0:
+                result.append(value)
     return result
 
 
@@ -145,6 +180,44 @@ def signal_all(pids, signum):
             os.kill(pid, signum)
         except ProcessLookupError:
             pass
+
+
+def kill_target_directly(pid):
+    # Fallback for the stop path, independent of /proc descendant
+    # enumeration: SIGKILL the known target PID directly, unconditionally, so
+    # the target itself cannot outlive a gap in descendant enumeration.
+    # Also SIGKILL the target's own process group, but only when it differs
+    # from the supervisor's own group: absent a setsid call, the target
+    # shares the supervisor's group, and killing that group here would kill
+    # the supervisor itself before terminate_descendants() has a chance to
+    # walk /proc and reach descendants that escaped into their own session
+    # (which do not share the target's group either). terminate_descendants()
+    # still runs afterwards to confirm and reap the wider tree.
+    try:
+        pgid = os.getpgid(pid)
+    except ProcessLookupError:
+        pgid = None
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    if pgid is not None and pgid != os.getpgrp():
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+
+def handle_stop_request(target_pid):
+    kill_target_directly(target_pid)
+    try:
+        terminate_descendants()
+    except BaseException:
+        # terminate_descendants() already spent its full bounded budget once;
+        # do not retry it here (the top-level handler below would otherwise
+        # spend that budget a second time; see T-042 review L7).
+        os._exit(126)
+    os._exit(124)
 
 
 def terminate_descendants():
@@ -210,6 +283,12 @@ def main():
     signal.set_wakeup_fd(wakeup_write)
 
     control_fd = int(os.environ[CONTROL_FD_ENV])
+    if not has_children_support():
+        report(
+            control_fd,
+            "ERROR /proc children enumeration unavailable (CONFIG_PROC_CHILDREN)",
+        )
+        os._exit(126)
     parent_pid = os.getppid()
     libc = ctypes.CDLL(None, use_errno=True)
     if libc.prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0:
@@ -283,8 +362,7 @@ def main():
 
     while True:
         if stop_requested:
-            terminate_descendants()
-            os._exit(124)
+            handle_stop_request(target.pid)
         returncode = target.poll()
         if returncode is not None:
             while True:
@@ -305,20 +383,25 @@ def main():
         wait_for_event()
 
 
-try:
-    main()
-except BaseException as exc:
+if __name__ == "__main__":
+    # Guarded so tests can exec() this source into a fresh namespace (with a
+    # different __name__) and call its functions directly, without also
+    # running the live supervisor. Run via "python -c" as intended, __name__
+    # is "__main__" and behavior is unchanged.
     try:
-        terminate_descendants()
-    except BaseException:
-        pass
-    try:
-        control = int(os.environ.get(CONTROL_FD_ENV, "-1"))
-        if control >= 0:
-            report(control, f"ERROR supervisor failed: {exc}")
-    except BaseException:
-        pass
-    os._exit(126)
+        main()
+    except BaseException as exc:
+        try:
+            terminate_descendants()
+        except BaseException:
+            pass
+        try:
+            control = int(os.environ.get(CONTROL_FD_ENV, "-1"))
+            if control >= 0:
+                report(control, f"ERROR supervisor failed: {exc}")
+        except BaseException:
+            pass
+        os._exit(126)
 """
 
 
@@ -956,7 +1039,7 @@ def _stop_process(
         except OSError:
             pass
     try:
-        process.wait(timeout=1.0)
+        process.wait(timeout=_SUPERVISOR_STOP_WAIT_SECONDS)
     except subprocess.TimeoutExpired:
         try:
             os.killpg(process.pid, signal.SIGKILL)
