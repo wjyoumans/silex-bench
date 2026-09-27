@@ -7,6 +7,7 @@ import os
 import random
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -71,7 +72,7 @@ class ProcessTests(unittest.TestCase):
             return -15, b"", b""
 
         with mock.patch("silex_bench.process.time.monotonic", side_effect=lambda: now[0]), mock.patch(
-            "silex_bench.process._supervised_popen", return_value=(supervisor, 12345)
+            "silex_bench.process._supervised_popen", return_value=(supervisor, 12345, None)
         ), mock.patch(
             "silex_bench.process._bounded_communicate", side_effect=OSError("capture failed")
         ), mock.patch("silex_bench.process._stop_process", side_effect=cleanup):
@@ -90,7 +91,7 @@ class ProcessTests(unittest.TestCase):
             return -15, b"", b""
 
         with mock.patch("silex_bench.process.time.monotonic", side_effect=lambda: now[0]), mock.patch(
-            "silex_bench.process._supervised_popen", return_value=(supervisor, 12345)
+            "silex_bench.process._supervised_popen", return_value=(supervisor, 12345, None)
         ), mock.patch("silex_bench.process._stop_process", side_effect=cleanup):
             result = run_marked_process(
                 [sys.executable, "-c", "pass"], timeout=10, cwd=Path.cwd(),
@@ -154,7 +155,7 @@ class ProcessTests(unittest.TestCase):
         supervisor = mock.Mock()
         with tempfile.TemporaryDirectory() as temporary, mock.patch(
             "silex_bench.process._supervised_popen",
-            return_value=(supervisor, 12345),
+            return_value=(supervisor, 12345, None),
         ), mock.patch(
             "silex_bench.process._bounded_communicate",
             side_effect=KeyboardInterrupt,
@@ -1303,8 +1304,8 @@ sys.stdin.readline()
         # T-042 review L6: the readiness check alone only shows the affinity
         # a backend started with. Here the target changes its own affinity
         # during the measured interval; the post-target re-check must catch
-        # that drift, but as a diagnostic only (it must not fail an
-        # otherwise-successful sample -- that policy choice is left open).
+        # that drift and, like the readiness check, fail the sample (it is a
+        # protocol failure, not a timeout).
         if not hasattr(os, "sched_getaffinity"):
             self.skipTest("sched_getaffinity is unavailable")
         if shutil.which("taskset") is None:
@@ -1336,9 +1337,46 @@ sys.stdin.readline()
                 cpu=cpu,
             )
 
-        self.assertTrue(result["success"])
+        self.assertFalse(result["success"])
+        self.assertFalse(result["timeout"])
+        self.assertIn("after the target marker", result["error"])
+        self.assertIn(f"requested CPU {cpu}", result["error"])
         self.assertEqual(result["effective_affinity"], [cpu])
         self.assertEqual(result["effective_affinity_after_target"], [other_cpu])
+        self.assertNotIn("target_wall_ms", result)
+
+    def test_marked_process_keeps_an_unchanged_affinity_after_target(self) -> None:
+        # Counterpart to the L6 failure above: a target that stays on its
+        # requested CPU passes the post-target re-check.
+        if not hasattr(os, "sched_getaffinity"):
+            self.skipTest("sched_getaffinity is unavailable")
+        if shutil.which("taskset") is None:
+            self.skipTest("taskset is unavailable")
+        cpu = min(os.sched_getaffinity(0))
+        child = """
+import sys
+sys.stdin.readline()
+print("READY", flush=True)
+nonce = sys.stdin.readline().strip()
+print("TARGET:" + nonce, flush=True)
+sys.stdin.readline()
+"""
+        with tempfile.TemporaryDirectory() as temporary:
+            result = run_marked_process(
+                [sys.executable, "-u", "-c", child],
+                ready_input="start\n",
+                target_input=TARGET_NONCE_PLACEHOLDER + "\n",
+                final_input="finish\n",
+                ready_marker="READY",
+                target_marker="TARGET",
+                timeout=5.0,
+                cwd=Path(temporary),
+                cpu=cpu,
+            )
+
+        self.assertTrue(result["success"], result.get("error"))
+        self.assertEqual(result["effective_affinity_after_target"], [cpu])
+        self.assertIsNone(result["failure_origin"])
 
     def test_cpu_pin_does_not_execute_path_selected_taskset(self) -> None:
         if not hasattr(os, "sched_getaffinity"):
@@ -1491,6 +1529,329 @@ time.sleep(2)
         self.assertIn("pipe closed", result["error"])
         self.assertIn("ready input", result["error"])
         self.assertNotIn("timed out", result["error"])
+
+    def _lagging_harness(self) -> tuple[Any, Any, list[float]]:
+        """Stand-ins for the process module's ``os`` and ``time`` that simulate
+        harness scheduling lag deterministically (T-042 review L4).
+
+        From the first EOF the harness reads on a pipe (a captured stream,
+        so the target has exited by then), its monotonic clock reads 1000 s
+        later, as if the harness had been descheduled past the deadline
+        before noticing. EOFs on regular files (read while pinning the
+        command) do not count.
+        """
+        lag = [0.0]
+
+        class LaggingOs:
+            def __getattr__(self, name: str) -> Any:
+                return getattr(os, name)
+
+            def read(self, descriptor: int, size: int) -> bytes:
+                data = os.read(descriptor, size)
+                if not data and stat.S_ISFIFO(os.fstat(descriptor).st_mode):
+                    lag[0] = 1000.0
+                return data
+
+        class LaggingTime:
+            def __getattr__(self, name: str) -> Any:
+                return getattr(time, name)
+
+            def monotonic(self) -> float:
+                return time.monotonic() + lag[0]
+
+        return LaggingOs(), LaggingTime(), lag
+
+    def test_bounded_communicate_classifies_an_already_exited_process_as_exited(
+        self,
+    ) -> None:
+        # T-042 review L4: once the deadline has passed, an exit (and EOF)
+        # that had already happened must be classified as an exit, not a
+        # timeout. The process has exited (unreaped) before the call, and a
+        # zero timeout makes the harness notice only after the deadline.
+        process = subprocess.Popen(
+            [sys.executable, "-c", "print('done'); raise SystemExit(3)"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOWAIT)
+            stdout, stderr, error = process_module._bounded_communicate(
+                process, None, 0.0
+            )
+        finally:
+            process.stdout.close()
+            process.stderr.close()
+            process.wait()
+        self.assertIsNone(error)
+        self.assertEqual(bytes(stdout), b"done\n")
+        self.assertEqual(process.returncode, 3)
+
+    def test_bounded_communicate_still_times_out_a_running_process(self) -> None:
+        process = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            _, _, error = process_module._bounded_communicate(process, None, 0.0)
+        finally:
+            process.kill()
+            process.stdout.close()
+            process.stderr.close()
+            process.wait()
+        self.assertEqual(error, "process timed out")
+
+    def test_process_exit_noticed_after_the_deadline_is_not_a_timeout(self) -> None:
+        # T-042 review L4, through run_process with the real supervisor.
+        lagging_os, lagging_time, lag = self._lagging_harness()
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.object(
+            process_module, "os", lagging_os
+        ), mock.patch.object(process_module, "time", lagging_time):
+            result = run_process(
+                [sys.executable, "-c", "print('out'); raise SystemExit(3)"],
+                timeout=30.0,
+                cwd=Path(temporary),
+            )
+        self.assertEqual(lag[0], 1000.0)
+        self.assertFalse(result["success"])
+        self.assertFalse(result["timeout"])
+        self.assertEqual(result["returncode"], 3)
+        self.assertEqual(result["stdout"], "out\n")
+        self.assertEqual(result["failure_origin"], "target")
+
+    def test_marked_exit_noticed_after_the_deadline_is_not_a_timeout(self) -> None:
+        # T-042 review L4: a marked target that exits early, noticed only
+        # after the deadline, is an early exit, not a timeout.
+        lagging_os, lagging_time, lag = self._lagging_harness()
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.object(
+            process_module, "os", lagging_os
+        ), mock.patch.object(process_module, "time", lagging_time):
+            result = run_marked_process(
+                [sys.executable, "-c", "import sys; sys.stdin.readline(); sys.exit(3)"],
+                ready_input="start\n",
+                target_input=TARGET_NONCE_PLACEHOLDER + "\n",
+                final_input="finish\n",
+                ready_marker="READY",
+                target_marker="TARGET",
+                timeout=30.0,
+                cwd=Path(temporary),
+            )
+        self.assertEqual(lag[0], 1000.0)
+        self.assertFalse(result["success"])
+        self.assertFalse(result["timeout"])
+        self.assertEqual(result["returncode"], 3)
+        self.assertEqual(result["error"], "marked process did not reach ready marker")
+        self.assertEqual(result["failure_origin"], "target")
+
+    def test_marked_process_rejects_a_leftover_partial_line_read_before_dispatch(
+        self,
+    ) -> None:
+        # T-042 review L9: a prompt-like unterminated line left before
+        # dispatch runs into the target marker. One write puts the ready
+        # marker and the partial line in the pipe together, so the harness
+        # reads the partial line before dispatch.
+        child = """
+import os
+import sys
+sys.stdin.readline()
+os.write(1, b"READY\\n? ")
+nonce = sys.stdin.readline().strip()
+os.write(1, ("TARGET:" + nonce + "\\n").encode())
+sys.stdin.readline()
+"""
+        with tempfile.TemporaryDirectory() as temporary:
+            result = run_marked_process(
+                [sys.executable, "-u", "-c", child],
+                ready_input="start\n",
+                target_input=TARGET_NONCE_PLACEHOLDER + "\n",
+                final_input="finish\n",
+                ready_marker="READY",
+                target_marker="TARGET",
+                timeout=30.0,
+                cwd=Path(temporary),
+            )
+        self.assertFalse(result["success"])
+        self.assertFalse(result["timeout"])
+        self.assertEqual(
+            result["error"],
+            "marked process emitted the target marker after unterminated "
+            "output on the same line",
+        )
+
+    def test_marked_process_rejects_a_leftover_partial_line_read_after_dispatch(
+        self,
+    ) -> None:
+        # T-042 review L9: the same partial line, arriving in the same write
+        # as the marker (so the harness reads it after dispatch), is the
+        # same protocol error, not a timeout.
+        child = """
+import os
+import sys
+sys.stdin.readline()
+os.write(1, b"READY\\n")
+nonce = sys.stdin.readline().strip()
+os.write(1, ("? TARGET:" + nonce + "\\n").encode())
+sys.stdin.readline()
+"""
+        with tempfile.TemporaryDirectory() as temporary:
+            started = time.monotonic()
+            result = run_marked_process(
+                [sys.executable, "-u", "-c", child],
+                ready_input="start\n",
+                target_input=TARGET_NONCE_PLACEHOLDER + "\n",
+                final_input="finish\n",
+                ready_marker="READY",
+                target_marker="TARGET",
+                timeout=30.0,
+                cwd=Path(temporary),
+            )
+            elapsed = time.monotonic() - started
+        self.assertFalse(result["success"])
+        self.assertFalse(result["timeout"])
+        self.assertIn("unterminated output", result["error"])
+        self.assertLess(elapsed, 20.0)
+
+    def test_marked_process_accepts_a_partial_line_terminated_before_the_marker(
+        self,
+    ) -> None:
+        # A leftover partial line that the target terminates before printing
+        # the marker does not touch the marker line.
+        child = """
+import os
+import sys
+sys.stdin.readline()
+os.write(1, b"READY\\n? ")
+nonce = sys.stdin.readline().strip()
+os.write(1, ("\\nTARGET:" + nonce + "\\n").encode())
+sys.stdin.readline()
+"""
+        with tempfile.TemporaryDirectory() as temporary:
+            result = run_marked_process(
+                [sys.executable, "-u", "-c", child],
+                ready_input="start\n",
+                target_input=TARGET_NONCE_PLACEHOLDER + "\n",
+                final_input="finish\n",
+                ready_marker="READY",
+                target_marker="TARGET",
+                timeout=30.0,
+                cwd=Path(temporary),
+            )
+        self.assertTrue(result["success"], result.get("error"))
+
+    def test_failure_origin_distinguishes_supervisor_and_target_exit_124(
+        self,
+    ) -> None:
+        # T-042 review L8: exit status 124 from a supervisor stopped after a
+        # timeout, versus a target that itself exits with 124.
+        with tempfile.TemporaryDirectory() as temporary:
+            stopped = run_process(
+                [sys.executable, "-c", "import time; time.sleep(30)"],
+                timeout=0.5,
+                cwd=Path(temporary),
+            )
+            own = run_process(
+                [sys.executable, "-c", "raise SystemExit(124)"],
+                timeout=30.0,
+                cwd=Path(temporary),
+            )
+        self.assertTrue(stopped["timeout"])
+        self.assertEqual(stopped["returncode"], 124)
+        self.assertEqual(stopped["failure_origin"], "supervisor")
+        self.assertFalse(own["timeout"])
+        self.assertEqual(own["returncode"], 124)
+        self.assertEqual(own["failure_origin"], "target")
+
+    def test_failure_origin_is_target_for_a_target_exit_126(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            result = run_process(
+                [sys.executable, "-c", "raise SystemExit(126)"],
+                timeout=30.0,
+                cwd=Path(temporary),
+            )
+        self.assertFalse(result["success"])
+        self.assertEqual(result["returncode"], 126)
+        self.assertEqual(result["failure_origin"], "target")
+        self.assertNotIn("error", result)
+
+    def test_post_handshake_supervisor_error_is_reported_with_its_origin(
+        self,
+    ) -> None:
+        # T-042 review L8: a supervisor that fails after the PID handshake
+        # reports on the still-open control channel; the harness records the
+        # error and the supervisor origin of exit status 126. A stand-in
+        # supervisor writes the whole exchange in one write, so the harness
+        # also has to keep the bytes that follow the PID line.
+        fake_supervisor = (
+            "import os\n"
+            f"fd = int(os.environ[{process_module._SUPERVISOR_CONTROL_FD_ENV!r}])\n"
+            "os.write(fd, b'PID %d\\nERROR simulated cleanup failure\\n"
+            "EXIT supervisor 126\\n' % os.getpid())\n"
+            "os._exit(126)\n"
+        )
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.object(
+            process_module, "_SUPERVISOR_SOURCE", fake_supervisor
+        ):
+            result = run_process(
+                [sys.executable, "-c", "pass"],
+                timeout=30.0,
+                cwd=Path(temporary),
+            )
+        self.assertFalse(result["success"])
+        self.assertFalse(result["timeout"])
+        self.assertEqual(result["returncode"], 126)
+        self.assertEqual(result["failure_origin"], "supervisor")
+        self.assertEqual(
+            result["error"],
+            "process supervisor failed: simulated cleanup failure",
+        )
+
+    def test_failure_origin_is_unknown_without_a_matching_exit_report(self) -> None:
+        # A supervisor that exits without reporting (or reports a different
+        # status than the harness observed) leaves the origin unknown.
+        for report in ("", "EXIT target 0\\n"):
+            with self.subTest(report=report):
+                fake_supervisor = (
+                    "import os\n"
+                    f"fd = int(os.environ[{process_module._SUPERVISOR_CONTROL_FD_ENV!r}])\n"
+                    f"os.write(fd, b'PID %d\\n{report}' % os.getpid())\n"
+                    "os._exit(126)\n"
+                )
+                with tempfile.TemporaryDirectory() as temporary, mock.patch.object(
+                    process_module, "_SUPERVISOR_SOURCE", fake_supervisor
+                ):
+                    result = run_process(
+                        [sys.executable, "-c", "pass"],
+                        timeout=30.0,
+                        cwd=Path(temporary),
+                    )
+                self.assertEqual(result["returncode"], 126)
+                self.assertIsNone(result["failure_origin"])
+                self.assertNotIn("error", result)
+
+    def test_marked_success_has_no_failure_origin(self) -> None:
+        child = """
+import sys
+sys.stdin.readline()
+print("READY", flush=True)
+nonce = sys.stdin.readline().strip()
+print("TARGET:" + nonce, flush=True)
+sys.stdin.readline()
+"""
+        with tempfile.TemporaryDirectory() as temporary:
+            result = run_marked_process(
+                [sys.executable, "-u", "-c", child],
+                ready_input="start\n",
+                target_input=TARGET_NONCE_PLACEHOLDER + "\n",
+                final_input="finish\n",
+                ready_marker="READY",
+                target_marker="TARGET",
+                timeout=30.0,
+                cwd=Path(temporary),
+            )
+        self.assertTrue(result["success"], result.get("error"))
+        self.assertIsNone(result["failure_origin"])
 
     def test_timeout_cleanup_does_not_call_unbounded_communicate(self) -> None:
         with tempfile.TemporaryDirectory() as temporary, mock.patch.object(
@@ -1921,6 +2282,54 @@ class SupervisorSourceDescendantTests(unittest.TestCase):
 
         self.assertEqual(order, ["kill:4242:99", "terminate"])
         exit_mock.assert_called_once_with(124)
+
+    def test_supervisor_reports_its_exit_origin_on_the_control_channel(
+        self,
+    ) -> None:
+        # T-042 review L8: after the PID handshake the supervisor reports
+        # whether its exit status is the target's own or its own.
+        cases = {
+            "stop": ("EXIT supervisor 124\n", 124),
+            "stop_cleanup_failure": (
+                "ERROR cleanup after stop request failed: survived\n"
+                "EXIT supervisor 126\n",
+                126,
+            ),
+            "target_exit": ("EXIT target 126\n", 126),
+        }
+        for case, (expected, status) in cases.items():
+            with self.subTest(case=case):
+                namespace = _load_supervisor_namespace()
+                control_read, control_write = os.pipe()
+                namespace["control_channel_fd"] = control_write
+                namespace["kill_target_directly"] = lambda pid, pidfd: None
+
+                def failing_terminate() -> None:
+                    raise RuntimeError("survived")
+
+                namespace["terminate_descendants"] = (
+                    failing_terminate if case == "stop_cleanup_failure" else (lambda: True)
+                )
+                target = SimpleNamespace(pid=4242, returncode=None)
+                try:
+                    with mock.patch.object(
+                        os, "_exit", side_effect=SystemExit
+                    ) as exit_mock:
+                        with self.assertRaises(SystemExit):
+                            if case == "target_exit":
+                                namespace["finish"](126)
+                            else:
+                                namespace["handle_stop_request"](target, 99)
+                    exit_mock.assert_called_once_with(status)
+                    os.set_blocking(control_read, False)
+                    try:
+                        reported = os.read(control_read, 4096).decode("ascii")
+                    except BlockingIOError:
+                        reported = ""
+                    self.assertEqual(reported, expected)
+                finally:
+                    os.close(control_read)
+                    os.close(control_write)
 
     def test_stop_path_cleanup_failure_exits_once_without_a_second_full_pass(
         self,

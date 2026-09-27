@@ -30,6 +30,15 @@ TARGET_NONCE_PLACEHOLDER = "__SILEX_BENCH_TARGET_NONCE__"
 _READ_CHUNK_BYTES = 65536
 _SUPERVISOR_CONTROL_BYTES = 128
 _SUPERVISOR_HANDSHAKE_SECONDS = 5.0
+# Upper bound on what the harness reads from the post-handshake control
+# channel (T-042 review L8). The supervisor writes at most a few bounded
+# (128-byte) lines there.
+_SUPERVISOR_CHANNEL_MAX_BYTES = 4096
+# Once every captured stream has reached EOF, the supervisor has already begun
+# exiting (it holds both pipes open until then), so only kernel exit
+# bookkeeping remains before it can be reaped. This bounds that final wait
+# when the observation deadline has already passed (T-042 review L4).
+_SUPERVISOR_EXIT_AFTER_EOF_SECONDS = 1.0
 # On a stop request, the embedded supervisor now spends its bounded cleanup
 # budget at most once (see handle_stop_request/terminate_descendants in
 # _SUPERVISOR_SOURCE): up to 32 rounds of a 2 ms freeze-and-confirm loop
@@ -92,6 +101,11 @@ AFFINITY_ENV = "SILEX_BENCH_INTERNAL_SUPERVISOR_AFFINITY"
 FALLBACK_WAIT_SECONDS = 0.2
 
 stop_requested = False
+# The control pipe stays open after the PID handshake (T-042 review L8), so
+# the supervisor can still report later errors and, just before it exits,
+# whether its exit status is the target's own or one it produced itself (124
+# after a stop request, 126 after an internal failure). Set by main().
+control_channel_fd = None
 
 
 def request_stop(signum, frame):
@@ -113,6 +127,21 @@ def report(control_fd, message):
     offset = 0
     while offset < len(payload):
         offset += os.write(control_fd, payload[offset:])
+
+
+def report_post_handshake(message):
+    # Best effort: a lost report must never change how the supervisor exits.
+    # The harness treats a missing EXIT line as an unknown origin.
+    if control_channel_fd is None:
+        return
+    try:
+        report(control_channel_fd, message)
+    except BaseException:
+        pass
+
+
+def report_exit(origin, returncode):
+    report_post_handshake(f"EXIT {origin} {returncode}")
 
 
 def has_children_support():
@@ -245,11 +274,14 @@ def handle_stop_request(target, target_pidfd):
         kill_target_directly(target.pid, target_pidfd)
     try:
         terminate_descendants()
-    except BaseException:
+    except BaseException as exc:
         # terminate_descendants() already spent its full bounded budget once;
         # do not retry it here (the top-level handler below would otherwise
         # spend that budget a second time; see T-042 review L7).
+        report_post_handshake(f"ERROR cleanup after stop request failed: {exc}")
+        report_exit("supervisor", 126)
         os._exit(126)
+    report_exit("supervisor", 124)
     os._exit(124)
 
 
@@ -295,6 +327,10 @@ def terminate_descendants():
 
 
 def finish(returncode):
+    # The reported value is the status the harness will observe: the target's
+    # own exit code, or the negated signal number the supervisor re-raises on
+    # itself below.
+    report_exit("target", returncode if returncode < 0 else min(returncode, 255))
     if returncode < 0:
         signum = -returncode
         signal.signal(signum, signal.SIG_DFL)
@@ -305,6 +341,7 @@ def finish(returncode):
 
 
 def main():
+    global control_channel_fd
     for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(signum, request_stop)
     # SIGCHLD needs a registered handler (not the default disposition) for
@@ -377,7 +414,7 @@ def main():
         report(control_fd, f"ERROR target spawn failed: {exc}")
         os._exit(126)
     report(control_fd, f"PID {target.pid}")
-    os.close(control_fd)
+    control_channel_fd = control_fd
 
     try:
         target_pidfd = os.pidfd_open(target.pid, 0)
@@ -442,6 +479,8 @@ if __name__ == "__main__":
             control = int(os.environ.get(CONTROL_FD_ENV, "-1"))
             if control >= 0:
                 report(control, f"ERROR supervisor failed: {exc}")
+                if control_channel_fd is not None:
+                    report(control, "EXIT supervisor 126")
         except BaseException:
             pass
         os._exit(126)
@@ -1049,28 +1088,7 @@ def _bounded_communicate(
         else:
             _close_stdin(process)
 
-    deadline = time.monotonic() + timeout
-    while readers or stdin_fd is not None:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            return stdout, stderr, "process timed out"
-        readable, writable, _ = select.select(
-            list(readers),
-            [stdin_fd] if stdin_fd is not None else [],
-            [],
-            remaining,
-        )
-        if not readable and not writable:
-            return stdout, stderr, "process timed out"
-        if stdin_fd is not None and stdin_fd in writable:
-            try:
-                written = os.write(stdin_fd, pending_input[input_offset:])
-            except BrokenPipeError:
-                written = len(pending_input) - input_offset
-            input_offset += written
-            if input_offset >= len(pending_input):
-                _close_stdin(process)
-                stdin_fd = None
+    def read_ready(readable: list[int]) -> bool:
         for fd in readable:
             output = readers[fd]
             capacity = MAX_CAPTURE_BYTES - len(output)
@@ -1082,13 +1100,55 @@ def _bounded_communicate(
                 del readers[fd]
                 continue
             if not _extend_limited(output, chunk):
-                return stdout, stderr, "process output limit exceeded"
+                return False
+        return True
 
+    deadline = time.monotonic() + timeout
+    while readers or stdin_fd is not None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        readable, writable, _ = select.select(
+            list(readers),
+            [stdin_fd] if stdin_fd is not None else [],
+            [],
+            remaining,
+        )
+        if not readable and not writable:
+            break
+        if stdin_fd is not None and stdin_fd in writable:
+            try:
+                written = os.write(stdin_fd, pending_input[input_offset:])
+            except BrokenPipeError:
+                written = len(pending_input) - input_offset
+            input_offset += written
+            if input_offset >= len(pending_input):
+                _close_stdin(process)
+                stdin_fd = None
+        if not read_ready(readable):
+            return stdout, stderr, "process output limit exceeded"
+
+    if readers:
+        # The deadline passed with output still open. Timeout classification
+        # uses what has already happened, not when this harness got to look
+        # (T-042 review L4): drain what is readable without waiting, and an
+        # EOF on every stream that was already there counts as an exit.
+        while readers:
+            readable, _, _ = select.select(list(readers), [], [], 0)
+            if not readable:
+                return stdout, stderr, "process timed out"
+            if not read_ready(readable):
+                return stdout, stderr, "process output limit exceeded"
+    if stdin_fd is not None:
+        # Every output stream is at EOF, so the supervisor is exiting and
+        # can no longer consume input.
+        _close_stdin(process)
+    # Every stream is at EOF, and the supervisor holds both pipes until it
+    # exits, so it is already exiting; a deadline that passed meanwhile does
+    # not make that exit a timeout.
     remaining = deadline - time.monotonic()
-    if remaining <= 0:
-        return stdout, stderr, "process timed out"
     try:
-        process.wait(timeout=remaining)
+        process.wait(timeout=max(remaining, _SUPERVISOR_EXIT_AFTER_EOF_SECONDS))
     except subprocess.TimeoutExpired:
         return stdout, stderr, "process timed out"
     return stdout, stderr, None
@@ -1126,6 +1186,101 @@ class _ObservationDeadlineExpired(TimeoutError):
     """An observation deadline expired before supervisor cleanup began."""
 
 
+class _SupervisorChannel:
+    """The supervisor's control pipe after the PID handshake (T-042 review L8).
+
+    The supervisor reports post-handshake errors as ``ERROR <text>`` lines and,
+    just before exiting, one ``EXIT <origin> <status>`` line naming whether its
+    exit status is the target's own (``target``) or one it produced itself
+    (``supervisor``: 124 after a stop request, 126 after an internal failure).
+    Read only after the supervisor has exited, when the pipe is at EOF.
+    """
+
+    def __init__(self, descriptor: int, pending: bytes) -> None:
+        self._descriptor = descriptor
+        self._buffer = bytearray(pending)
+        self._report: tuple[str | None, int | None, str | None] | None = None
+
+    def _read_available(self) -> None:
+        if self._descriptor < 0:
+            return
+        while len(self._buffer) <= _SUPERVISOR_CHANNEL_MAX_BYTES:
+            try:
+                chunk = os.read(
+                    self._descriptor,
+                    _SUPERVISOR_CHANNEL_MAX_BYTES + 1 - len(self._buffer),
+                )
+            except (BlockingIOError, InterruptedError):
+                return
+            except OSError:
+                return
+            if not chunk:
+                return
+            self._buffer.extend(chunk)
+
+    def exit_report(self) -> tuple[str | None, int | None, str | None]:
+        """Return ``(origin, status, supervisor_error)`` from the channel."""
+        if self._report is not None:
+            return self._report
+        self._read_available()
+        origin: str | None = None
+        status: int | None = None
+        errors: list[str] = []
+        # Only complete lines are trusted; a truncated tail is ignored.
+        for raw_line in bytes(self._buffer).split(b"\n")[:-1]:
+            line = raw_line.decode("ascii", errors="replace")
+            if line.startswith("ERROR "):
+                errors.append(line[len("ERROR "):])
+                continue
+            fields = line.split()
+            if (
+                len(fields) == 3
+                and fields[0] == "EXIT"
+                and fields[1] in {"target", "supervisor"}
+            ):
+                try:
+                    status = int(fields[2])
+                except ValueError:
+                    continue
+                origin = fields[1]
+        self._report = (origin, status, "; ".join(errors) or None)
+        return self._report
+
+    def close(self) -> None:
+        if self._descriptor >= 0:
+            os.close(self._descriptor)
+            self._descriptor = -1
+
+
+def _with_failure_origin(
+    result: dict[str, Any], channel: _SupervisorChannel | None
+) -> dict[str, Any]:
+    """Record whether a failed run's exit status came from the target.
+
+    ``failure_origin`` is ``"target"`` when the status is the target's own,
+    ``"supervisor"`` when the supervisor produced it (124 after a stop
+    request, 126 after an internal failure), and ``None`` for a successful
+    run, a run without an exit status, or when the supervisor did not report
+    the status it exited with (T-042 review L8). Closes ``channel``.
+    """
+    origin, status, supervisor_error = (None, None, None)
+    if channel is not None:
+        origin, status, supervisor_error = channel.exit_report()
+        channel.close()
+    returncode = result.get("returncode")
+    if result.get("success") is True or returncode is None or status != returncode:
+        origin = None
+    result["failure_origin"] = origin
+    if origin == "supervisor" and supervisor_error:
+        error = result.get("error")
+        result["error"] = (
+            f"process supervisor failed: {supervisor_error}"
+            if not error
+            else f"{error} (process supervisor: {supervisor_error})"
+        )
+    return result
+
+
 def _supervised_popen(
     pinned: dict[str, Any],
     *,
@@ -1134,7 +1289,7 @@ def _supervised_popen(
     stdin: Any,
     bufsize: int = -1,
     deadline: float | None = None,
-) -> tuple[subprocess.Popen[bytes], int]:
+) -> tuple[subprocess.Popen[bytes], int, _SupervisorChannel]:
     control_read, control_write = os.pipe2(
         getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0)
     )
@@ -1205,9 +1360,11 @@ def _supervised_popen(
             if not chunk:
                 break
             response.extend(chunk)
-            if len(response) > _SUPERVISOR_CONTROL_BYTES:
+            # Only the handshake line itself is bounded here; bytes after its
+            # newline already belong to the post-handshake channel.
+            if b"\n" not in response and len(response) > _SUPERVISOR_CONTROL_BYTES:
                 raise OSError("process supervisor response exceeds its size limit")
-        line = bytes(response).splitlines()[0] if response else b""
+        line, _, pending = bytes(response).partition(b"\n")
         fields = line.decode("ascii", errors="replace").split()
         if len(fields) != 2 or fields[0] != "PID" or not fields[1].isdigit():
             detail = line.decode("ascii", errors="replace") or "no response"
@@ -1215,13 +1372,16 @@ def _supervised_popen(
         target_pid = int(fields[1])
         if target_pid <= 0:
             raise OSError("process supervisor returned an invalid target PID")
-        return process, target_pid
+        channel = _SupervisorChannel(control_read, pending)
+        control_read = -1
+        return process, target_pid, channel
     except BaseException:
         if process is not None:
             _stop_process(process)
         raise
     finally:
-        os.close(control_read)
+        if control_read >= 0:
+            os.close(control_read)
         if control_write >= 0:
             os.close(control_write)
 
@@ -1280,9 +1440,10 @@ def run_process(
     start = time.perf_counter_ns()
     deadline = time.monotonic() + timeout
     process: subprocess.Popen[bytes] | None = None
+    channel: _SupervisorChannel | None = None
     try:
         try:
-            process, _ = _supervised_popen(
+            process, _, channel = _supervised_popen(
                 pinned,
                 cwd=cwd,
                 env=env,
@@ -1296,9 +1457,9 @@ def run_process(
         finally:
             for descriptor in pinned["descriptors"]:
                 os.close(descriptor)
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise subprocess.TimeoutExpired(cmd, timeout)
+        # A deadline that already passed still gets one observation of the
+        # supervised process before it is classified (T-042 review L4).
+        remaining = max(deadline - time.monotonic(), 0.0)
         stdout, stderr, capture_error = _bounded_communicate(
             process,
             input_bytes,
@@ -1313,7 +1474,7 @@ def run_process(
             returncode, stdout_tail, stderr_tail = _stop_process(process)
             _extend_limited(stdout, stdout_tail)
             _extend_limited(stderr, stderr_tail)
-            return {
+            return _with_failure_origin({
                 "available": True,
                 "success": False,
                 "timeout": capture_error == "process timed out",
@@ -1323,7 +1484,7 @@ def run_process(
                 "stdout": stdout.decode(errors="replace"),
                 "stderr": stderr.decode(errors="replace"),
                 "error": capture_error,
-            }
+            }, channel)
     except (subprocess.TimeoutExpired, _ObservationDeadlineExpired) as exc:
         # Same rationale as above: classify the wall time before cleanup.
         elapsed_ms = (time.perf_counter_ns() - start) / 1_000_000
@@ -1331,7 +1492,7 @@ def run_process(
             returncode, stdout_tail, stderr_tail = None, b"", b""
         else:
             returncode, stdout_tail, stderr_tail = _stop_process(process)
-        return {
+        return _with_failure_origin({
             "available": process is not None,
             "success": False,
             "timeout": True,
@@ -1341,26 +1502,28 @@ def run_process(
             "stdout": stdout_tail.decode(errors="replace"),
             "stderr": stderr_tail.decode(errors="replace"),
             "error": str(exc) if isinstance(exc, _ObservationDeadlineExpired) else "process timed out",
-        }
+        }, channel)
     except (OSError, OverflowError, ValueError) as exc:
         if process is not None:
             _stop_process(process)
-        return {
+        return _with_failure_origin({
             "available": process is not None,
             "success": False,
             "timeout": False,
             **execution_evidence,
             "error": str(exc),
-        }
+        }, channel)
     except BaseException:
         # The supervisor is started in a separate session, so a Ctrl-C sent to
         # the harness does not reach it.  Reap the full supervised process tree
         # before allowing the campaign to checkpoint its interrupted state.
         if process is not None:
             _stop_process(process)
+        if channel is not None:
+            channel.close()
         raise
     _close_output_pipes(process)
-    return {
+    return _with_failure_origin({
         "available": True,
         "success": process.returncode == 0,
         "timeout": False,
@@ -1369,7 +1532,7 @@ def run_process(
         **execution_evidence,
         "stdout": bytes(stdout).decode(errors="replace"),
         "stderr": bytes(stderr).decode(errors="replace"),
-    }
+    }, channel)
 
 
 def run_marked_process(
@@ -1449,15 +1612,14 @@ def run_marked_process(
     process_start = time.perf_counter_ns()
     deadline = time.monotonic() + timeout
     process: subprocess.Popen[bytes] | None = None
+    channel: _SupervisorChannel | None = None
     target_pid: int | None = None
     effective_affinity: list[int] | None = None
     # Re-read after the target marker (T-042 review L6): the readiness check
-    # above only shows the affinity a backend or runtime started with, and a
+    # below only shows the affinity a backend or runtime started with, and a
     # backend or its runtime (OpenMP, Julia) could still change it during the
-    # measured interval. This is diagnostic only; unlike the readiness check,
-    # a mismatch here does not fail the sample (that is a policy choice left
-    # open, since making it a failure condition would change what counts as a
-    # successful sample).
+    # measured interval. When a CPU was requested, a mismatch here fails the
+    # sample exactly as a readiness mismatch does.
     effective_affinity_after_target: list[int] | None = None
     open_streams: dict[int, bytearray] = {}
 
@@ -1580,9 +1742,30 @@ def run_marked_process(
                     return "matched"
                 if line == marker_bytes or line.startswith(prefix):
                     return "invalid"
+                # The exact nonce marker preceded by other bytes on its line:
+                # an unterminated line (such as a leftover prompt) ran into
+                # the marker. A protocol error, not a missing marker (T-042
+                # review L9). The nonce is unpredictable, so ordinary output
+                # cannot end with it by accident.
+                if line.endswith(expected_bytes):
+                    return "unterminated"
             remaining = deadline - time.monotonic()
             if remaining <= 0 or not read_streams(remaining):
                 return "missing"
+
+    def observed_exit() -> bool:
+        # Timeout classification uses what has already happened, not when
+        # this harness got to look (T-042 review L4). Drain whatever is
+        # readable without waiting: EOF on every stream shows the supervisor
+        # is already exiting, since it holds both pipes until it exits.
+        if process is None:
+            return False
+        try:
+            while open_streams and read_streams(0):
+                pass
+        except _OutputLimitExceeded:
+            pass
+        return not open_streams or process.poll() is not None
 
     def drain_until_exit() -> bool:
         if process is None:
@@ -1590,12 +1773,14 @@ def run_marked_process(
         while open_streams:
             remaining = deadline - time.monotonic()
             if remaining <= 0 or not read_streams(remaining):
-                return False
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
+                break
+        if open_streams and not observed_exit():
             return False
+        remaining = deadline - time.monotonic()
         try:
-            process.wait(timeout=remaining)
+            process.wait(
+                timeout=max(remaining, _SUPERVISOR_EXIT_AFTER_EOF_SECONDS)
+            )
         except subprocess.TimeoutExpired:
             return False
         return True
@@ -1605,15 +1790,17 @@ def run_marked_process(
         # elapsed time (both the timeout/success classification and the
         # reported wall time: cleanup can take up to about 2 s, and a
         # timeout row must not report more than the deadline, T-042 review
-        # L2). Launch exceptions carry their classification separately.
+        # L2). Launch exceptions carry their classification separately. A
+        # run whose exit or EOF was already observable when the deadline was
+        # noticed exited rather than timed out (T-042 review L4).
         if timed_out is None:
-            timed_out = time.monotonic() >= deadline
+            timed_out = time.monotonic() >= deadline and not observed_exit()
         elapsed_ms = (time.perf_counter_ns() - process_start) / 1_000_000
         if process is None:
             returncode = None
         else:
             returncode, _, _ = _stop_process(process)
-        return {
+        return _with_failure_origin({
             "available": process is not None,
             "success": False,
             "timeout": timed_out,
@@ -1625,11 +1812,11 @@ def run_marked_process(
             "stdout": stdout_output.decode(errors="replace"),
             "stderr": stderr_output.decode(errors="replace"),
             "error": message,
-        }
+        }, channel)
 
     try:
         try:
-            process, target_pid = _supervised_popen(
+            process, target_pid, channel = _supervised_popen(
                 pinned,
                 cwd=cwd,
                 env=env,
@@ -1687,7 +1874,14 @@ def run_marked_process(
         nonce_target_marker = f"{target_marker}:{target_nonce}"
         target_cpu_start = process_cpu_runtime_ns(target_pid)
         target_start = time.perf_counter_ns()
-        target_output_start = len(stdout_output)
+        # Scan from the start of the line in progress at dispatch, not from
+        # the dispatch offset itself, so a leftover unterminated pre-dispatch
+        # line (for example a prompt) is seen joined to whatever completes
+        # it whether it was read before or after dispatch (T-042 review L9).
+        pre_dispatch = bytes(stdout_output)
+        target_line_start = (
+            max(pre_dispatch.rfind(b"\n"), pre_dispatch.rfind(b"\r")) + 1
+        )
         if (
             write_failure := write_input_or_fail(nonce_target_input, "target")
         ) is not None:
@@ -1695,10 +1889,16 @@ def run_marked_process(
         target_marker_state = read_until_target(
             target_marker,
             nonce_target_marker,
-            start_offset=target_output_start,
+            start_offset=target_line_start,
         )
         if target_marker_state == "invalid":
             return failure("marked process emitted an invalid target marker")
+        if target_marker_state == "unterminated":
+            return failure(
+                "marked process emitted the target marker after unterminated "
+                "output on the same line",
+                timed_out=False,
+            )
         if target_marker_state != "matched":
             return failure("marked process did not reach target marker")
         target_wall_ms = (time.perf_counter_ns() - target_start) / 1_000_000
@@ -1713,17 +1913,26 @@ def run_marked_process(
 
         if cpu is not None:
             # Unlike the readiness-time effective_affinity read above (always
-            # attempted, and only its mismatch fails the sample when a CPU was
-            # requested), this diagnostic-only field is skipped entirely when
-            # there is no requested cpu to compare it against -- intentional,
-            # not an oversight to align with the earlier read (T-049 review
-            # round 2).
+            # attempted), this re-read is skipped entirely when there is no
+            # requested cpu to compare it against (T-049 review round 2).
+            # With a requested cpu it has the readiness check's severity: an
+            # unverifiable or changed affinity fails the sample (T-042 review
+            # L6).
             try:
                 effective_affinity_after_target = sorted(
                     os.sched_getaffinity(target_pid)
                 )
-            except (AttributeError, OSError):
-                effective_affinity_after_target = None
+            except (AttributeError, OSError) as exc:
+                return failure(
+                    "could not verify marked process CPU affinity after "
+                    f"the target marker: {exc}"
+                )
+            if effective_affinity_after_target != [cpu]:
+                return failure(
+                    "marked process CPU affinity after the target marker does "
+                    f"not match the requested CPU {cpu}: "
+                    f"{effective_affinity_after_target}"
+                )
 
         if (write_failure := write_input_or_fail(final_input, "final")) is not None:
             return write_failure
@@ -1741,10 +1950,12 @@ def run_marked_process(
         # descendant running after the campaign records an interruption.
         if process is not None:
             _stop_process(process)
+        if channel is not None:
+            channel.close()
         raise
 
     _close_output_pipes(process)
-    return {
+    return _with_failure_origin({
         "available": True,
         "success": process.returncode == 0,
         "timeout": False,
@@ -1758,7 +1969,7 @@ def run_marked_process(
         "effective_affinity_after_target": effective_affinity_after_target,
         "stdout": stdout_output.decode(errors="replace"),
         "stderr": stderr_output.decode(errors="replace"),
-    }
+    }, channel)
 
 
 def parse_key_values(text: str) -> dict[str, str]:

@@ -88,6 +88,27 @@ before forcing the supervisor's process group closed itself; giving the
 supervisor a way to report when its own cleanup pass has actually finished,
 instead of relying on a fixed wait, remains open as a follow-up.
 
+The supervisor's control pipe stays open after it reports the target PID.
+Later supervisor errors are reported on it, and just before exiting the
+supervisor reports whether its exit status is the target's own or one it
+produced itself: 124 after a stop request, or 126 after an internal failure
+(such as a descendant-cleanup failure). Each process result records this as
+`failure_origin`: `"target"` or `"supervisor"` for a failed run with an exit
+status, and `null` for a successful run, a run without an exit status, or a
+supervisor that exited without reporting the status the harness observed. A
+target that itself exits with 124 or 126 is therefore distinguishable from the
+supervisor. When the supervisor is the origin, its reported error text is
+included in the result's `error`. The field is a process-helper result field;
+backend adapters do not copy process exit statuses into observation payloads.
+
+Timeout classification uses what the harness can already observe, not when it
+happens to look. When the observation deadline has passed, the helper first
+drains whatever output is already readable without waiting; if every captured
+stream is already at end of file (the supervisor keeps both pipes open until
+it exits) or the supervisor has already exited, the run is classified by its
+exit, not as a timeout, even though the harness noticed it only after the
+deadline.
+
 When a CPU is pinned, only the target is placed on the requested CPU (through
 `taskset`); the process supervisor itself runs on the remaining CPUs, chosen
 by reading the target CPU's SMT sibling set from
@@ -116,8 +137,20 @@ own execution time. Integrated S-unit comparisons use their supervisor-measured
 whole-process wall envelope and label that different scope and clock explicitly.
 The supervisor also reports `effective_affinity` (read once the target is
 ready) and, when a CPU was requested, `effective_affinity_after_target` (read
-again after the marked interval) as diagnostics only; neither is consulted by
-the success/failure classification.
+again after the target marker). When a CPU was requested, either read failing
+or differing from that singleton CPU fails the sample as a protocol failure,
+not a timeout. Both reads inspect the target's thread-group leader only.
+
+The target marker must be a complete line of its own. The harness scans the
+target segment from the start of the stdout line in progress at dispatch, so a
+leftover unterminated pre-dispatch line (for example a prompt) is joined to the
+bytes that complete it whether it was read before or after dispatch. A line
+that ends with the exact nonce-bound target marker but has other bytes before
+it fails the observation as a protocol error ("emitted the target marker after
+unterminated output on the same line"), not as a timeout. Because the nonce is
+generated after readiness, ordinary output cannot end with it by accident. A
+leftover partial line that the target terminates before printing its marker
+does not affect the marker.
 
 Clock identities remain backend-specific: Silex uses `steady_clock`, Hecke
 uses Julia `time_ns`, PARI uses `getwalltime`, and Magma uses `Realtime`.

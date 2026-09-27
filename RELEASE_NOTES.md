@@ -27,6 +27,15 @@ developed with Anthropic Claude, under human direction and review.
 - Timeout handling uses one effective per-observation deadline across adapters.
   Interrupts preserve committed rows for resume, and terminal progress reports
   each completed observation with its recorded samples.
+- Process failure semantics are tighter. A run whose exit or end of output was
+  already observable when the harness noticed the deadline is classified by
+  its exit rather than as a timeout. Process results record `failure_origin`
+  (`target` or `supervisor`), so a supervisor stop (124) or internal failure
+  (126) is no longer confused with a target exiting with the same status, and
+  supervisor errors after launch are reported instead of lost. A marked target
+  whose CPU affinity differs from the requested CPU after its target marker now
+  fails the sample, as it already did at readiness. A target marker joined to
+  a leftover unterminated line is reported as a protocol error, not a timeout.
 - Square-root adapters construct a known square before timing and verify the
   recovered root afterward.
 - Reports contain absolute timings rather than speedup ratios and generate one
