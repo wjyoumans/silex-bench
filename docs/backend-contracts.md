@@ -13,9 +13,12 @@ decimal strings.
 - **PARI/GP** prepares `nf = nfinit(P)` before timing, then times
   `bnfinit(nf, 1)` followed by a checked `bnfcertify`. The
   implementation lives in PARI's `src/basemath/buch2.c` and `buch3.c`. The
-  adapter reads `no`, `cyc`, `fu`, `disc`, and `r1`, records the selected
-  executable and observed version, and validates optional version/source pins
-  when configured. Publication export requires the stronger source identity.
+  adapter reads `no`, `cyc`, `disc`, `r1`, and `r2`, and reports the unit
+  count as `#b.fu`, the number of fundamental units stored by
+  `bnfinit(nf, 1)`. All proof labels come from the `bnfcertify` result. The
+  adapter records the selected executable and observed version, and validates
+  optional version/source pins when configured. Publication export requires
+  the stronger source identity.
 - **Hecke/OSCAR** constructs uncached fields and LLL-reduced maximal orders
   before timing and calls the non-GRH
   `class_group(...; GRH=false, redo=true)` route in Hecke's
@@ -27,12 +30,39 @@ decimal strings.
   `repeat_call` in the same process. The calls use independently prepared
   objects and prevent cross-sample mathematical-cache reuse; reports keep both
   timings as distinct series. Other profiles record one `standard` sample.
+  The unit count is the length of the fundamental-unit list in the order's
+  `UnitGrpCtx`, which is the list the returned unit-group map evaluates. The
+  abstract group returned by `unit_group` is not used for the count because
+  Hecke builds its free rank from the signature. Proof labels come from
+  Hecke's own `GRH` flags: the class-group status is proven when
+  `ClassGrpCtx.GRH` is false, and the unit-group status is proven when
+  `UnitGrpCtx.GRH` is false. Hecke clears those flags only after its
+  unconditional proofs in `Clgp/Proof.jl`. The one exception is unit rank
+  zero, where `_class_unit_group` skips the unit proof because the unit group
+  is only torsion, so rank zero also counts as proven. Certification, the
+  regulator, and `proof_complete` require both statuses. A JIT pair requires
+  the flags and unit counts of both calls.
 - **Magma** calls `ClassGroup(O : Proof := "Full")` and
   `UnitGroup(O : GRH := false)`, matching the installed handbook contracts.
+  The unit count is the number of infinite-order generators of the returned
+  unit group, after mapping each one to its unit in the order. The V2.28
+  handbook documents no intrinsic that reports a computed group's proof
+  state. Magma's proof labels therefore follow the call contract: with
+  `Proof := "Full"` the class group is guaranteed, and with `GRH := false`
+  `UnitGroup` runs its rigorous proof phase. A call that returns a complete,
+  count-checked result is labeled proven.
+
+For every external engine, the unit-count readback runs after the target
+marker and the internal clocks have stopped. It is outside the timed region,
+but it counts toward the process wall time and the observation timeout. An
+adapter marks a class/unit observation as a failed computation, with no
+published final result, when the unit count is missing or differs from
+`r1 + r2 - 1`.
 
 Validation requires a positive class order, normalized invariant factors whose
 product is the order, a signature of the field degree, the Dirichlet unit-rank
-relation, an exact maximal-order discriminant, and completed proof metadata.
+relation between the returned unit count and the signature, an exact
+maximal-order discriminant, and completed proof metadata.
 Pairwise agreement checks all of those canonical result fields.
 
 ## Other operations
