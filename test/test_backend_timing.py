@@ -22,12 +22,15 @@ from silex_bench.backends.pari import (
     _source_release,
 )
 from silex_bench.backends.silex import SilexBackend
+from silex_bench.contracts import Case
 from silex_bench.model import (
     BackendContext,
     FieldSpec,
     SampleRequest,
+    backend_result_contract_errors,
     engine_probe_contract_errors,
 )
+from silex_bench.workloads import builtin_workloads
 from silex_bench.registry import add_executable_digests
 
 
@@ -226,8 +229,8 @@ class ProgramTimingTests(unittest.TestCase):
         self.assertIn("b = bnfinit(nf, 1);", class_target)
         self.assertNotIn("class_order", class_target)
         self.assertIn('print("class_order="', class_final)
-        self.assertIn("b.r1 + b.r2 - 1", class_final)
-        self.assertNotIn("b.fu", class_final)
+        self.assertIn("#b.fu", class_final)
+        self.assertNotIn("b.r1 + b.r2 - 1", class_final)
 
     def test_external_programs_prepare_fields_before_class_unit_timing(self) -> None:
         sample = class_unit_request()
@@ -259,11 +262,11 @@ class ProgramTimingTests(unittest.TestCase):
         )
         self.assertNotIn("class_order", hecke_target)
         self.assertIn('println("class_order="', hecke_final)
-        self.assertIn(
+        self.assertIn("length(target_unit_ctx.units)", hecke_final)
+        self.assertNotIn(
             "target_signature[1] + target_signature[2] - 1",
             hecke_final,
         )
-        self.assertNotIn("rank(target_U)", hecke_final)
 
     def test_hecke_jit_pair_uses_fresh_uncached_inputs_and_forced_recomputation(
         self,
@@ -2078,6 +2081,247 @@ class AdapterTimingTests(unittest.TestCase):
                 "source": "silex_flint_get_num_threads",
             },
         )
+
+
+def _pari_class_unit_stdout(unit_count: int) -> str:
+    return (
+        "target_internal_cpu_ms=1\n"
+        "target_internal_wall_ms=1\n"
+        "component_bnfinit_ms=1\n"
+        "component_certification_ms=0\n"
+        "class_order=1\n"
+        "class_invariants=[]\n"
+        f"fundamental_unit_count={unit_count}\n"
+        "polynomial_discriminant=20\n"
+        "maximal_order_discriminant=5\n"
+        "signature_r1=2\n"
+        "signature_r2=0\n"
+        "certified=1\n"
+        "reported_threads=1\n"
+    )
+
+
+def _hecke_class_unit_stdout(
+    unit_count: int,
+    *,
+    class_grh_free: str = "true",
+    unit_grh_free: str = "true",
+) -> str:
+    return (
+        "internal_target_cpu_ms=1\n"
+        "internal_target_wall_ms=1\n"
+        "component_class_group_ms=1\n"
+        "component_unit_group_ms=0\n"
+        "class_order=1\n"
+        "class_invariants=\n"
+        f"fundamental_unit_count={unit_count}\n"
+        "signature_r1=2\n"
+        "signature_r2=0\n"
+        "polynomial_discriminant=20\n"
+        "maximal_order_discriminant=5\n"
+        f"class_group_grh_free={class_grh_free}\n"
+        f"unit_group_grh_free={unit_grh_free}\n"
+    )
+
+
+def _magma_class_unit_stdout(unit_count: int) -> str:
+    return (
+        "class_order=1\n"
+        "class_invariants=[]\n"
+        f"fundamental_unit_count={unit_count}\n"
+        "signature_r1=2\n"
+        "signature_r2=0\n"
+        "maximal_order_discriminant=5\n"
+        "class_cpu_seconds=0.001\n"
+        "class_wall_seconds=0.001\n"
+        "unit_cpu_seconds=0.001\n"
+        "unit_wall_seconds=0.001\n"
+        "target_internal_cpu_seconds=0.002\n"
+        "target_internal_wall_seconds=0.002\n"
+    )
+
+
+def _run_external_class_unit(engine: str, stdout: str) -> dict[str, object]:
+    adapters = {
+        "pari": (PariBackend, "/usr/bin/gp", "silex_bench.backends.pari"),
+        "hecke": (HeckeBackend, "/usr/bin/julia", "silex_bench.backends.hecke"),
+        "magma": (MagmaBackend, "/usr/local/bin/magma", "silex_bench.backends.magma"),
+    }
+    factory, executable, module = adapters[engine]
+    backend = factory()
+    identity: dict[str, object] = {"executable": executable}
+    if engine == "hecke":
+        identity["project"] = None
+    backend._probe = {
+        "engine": engine,
+        "available": True,
+        "engine_identity": identity,
+    }
+    with tempfile.TemporaryDirectory() as temporary, mock.patch(
+        f"{module}.run_marked_process",
+        return_value=marked_result(stdout),
+    ):
+        return backend.run(class_unit_request(), context(Path(temporary)))
+
+
+def _class_unit_contract_errors(payload: dict[str, object]) -> list[str]:
+    result = payload["result"]
+    proof = payload["proof"]
+    assert isinstance(result, dict) and isinstance(proof, dict)
+    errors = backend_result_contract_errors(
+        result,
+        operation="class_unit_proven",
+        expected_field_degree=2,
+    )
+    contract = next(
+        workload
+        for workload in builtin_workloads()
+        if workload.id == "class_unit_proven"
+    )
+    case = Case(
+        id="target",
+        workload="class_unit_proven",
+        input={},
+        tags=(),
+        metrics={"degree": 2},
+        expected={},
+    )
+    validation = contract.validate_observation(case, str(payload["engine"]), result, proof)
+    return [*errors, *validation.errors]
+
+
+class ExternalUnitGroupReadbackTests(unittest.TestCase):
+    """Unit counts come from the engines' returned unit groups."""
+
+    ENGINES = ("pari", "hecke", "magma")
+
+    def _stdout(self, engine: str, unit_count: int) -> str:
+        return {
+            "pari": _pari_class_unit_stdout,
+            "hecke": _hecke_class_unit_stdout,
+            "magma": _magma_class_unit_stdout,
+        }[engine](unit_count)
+
+    def test_matching_unit_count_satisfies_the_contract(self) -> None:
+        for engine in self.ENGINES:
+            with self.subTest(engine=engine):
+                payload = _run_external_class_unit(engine, self._stdout(engine, 1))
+
+                self.assertTrue(payload["success"], payload.get("error"))
+                self.assertEqual(payload["status"], "ok")
+                self.assertEqual(payload["result"]["unit_rank"], 1)
+                self.assertTrue(payload["proof"]["proof_complete"])
+                self.assertEqual(_class_unit_contract_errors(payload), [])
+
+    def test_mismatched_unit_count_fails_the_contract(self) -> None:
+        for engine in self.ENGINES:
+            for count in (0, 2):
+                with self.subTest(engine=engine, count=count):
+                    payload = _run_external_class_unit(
+                        engine, self._stdout(engine, count)
+                    )
+
+                    self.assertFalse(payload["success"])
+                    self.assertEqual(payload["status"], "compute_error")
+                    self.assertIn(
+                        f"returned {count} fundamental units", payload["error"]
+                    )
+                    self.assertIn("r1 + r2 - 1 = 1", payload["error"])
+                    self.assertFalse(payload["proof"]["final_result_published"])
+                    self.assertEqual(payload["result"]["unit_rank"], count)
+                    errors = _class_unit_contract_errors(payload)
+                    self.assertIn(
+                        "backend.result.unit_rank must equal r1 + r2 - 1 from signature",
+                        errors,
+                    )
+                    self.assertIn("failed check: rank_relation", errors)
+
+    def test_missing_unit_count_is_incomplete(self) -> None:
+        for engine in self.ENGINES:
+            with self.subTest(engine=engine):
+                stdout = "".join(
+                    line + "\n"
+                    for line in self._stdout(engine, 1).splitlines()
+                    if not line.startswith("fundamental_unit_count=")
+                )
+                payload = _run_external_class_unit(engine, stdout)
+
+                self.assertFalse(payload["success"])
+                self.assertIsNone(payload["result"]["unit_rank"])
+
+    def test_hecke_proof_labels_follow_backend_grh_flags(self) -> None:
+        for class_flag, unit_flag in (
+            ("false", "true"),
+            ("true", "false"),
+            ("true", ""),
+        ):
+            with self.subTest(class_flag=class_flag, unit_flag=unit_flag):
+                payload = _run_external_class_unit(
+                    "hecke",
+                    _hecke_class_unit_stdout(
+                        1,
+                        class_grh_free=class_flag,
+                        unit_grh_free=unit_flag,
+                    ),
+                )
+
+                self.assertFalse(payload["success"])
+                self.assertFalse(payload["proof"]["proof_complete"])
+                self.assertEqual(payload["proof"]["certification_status"], "failed")
+                self.assertEqual(
+                    payload["proof"]["class_group_proof_status"],
+                    "proven" if class_flag == "true" else "unknown",
+                )
+                self.assertEqual(
+                    payload["proof"]["unit_group_proof_status"],
+                    "proven" if unit_flag == "true" else "unknown",
+                )
+
+    def test_programs_read_units_back_outside_the_timed_region(self) -> None:
+        sample = class_unit_request()
+
+        _, pari_target, pari_final = pari_programs(sample)
+        self.assertIn('print("fundamental_unit_count=", #b.fu);', pari_final)
+        self.assertNotIn("b.fu", pari_target)
+        self.assertNotIn("b.r1 + b.r2 - 1", pari_final)
+
+        _, hecke_target, hecke_final = hecke_programs(sample)
+        self.assertIn("get_attribute(target_O, :UnitGrpCtx)", hecke_final)
+        self.assertIn(
+            'println("fundamental_unit_count=", length(target_unit_ctx.units))',
+            hecke_final,
+        )
+        self.assertIn('println("class_group_grh_free=", !target_class_ctx.GRH)', hecke_final)
+        self.assertIn("bench_unit_group_grh_free(target_O, target_unit_ctx)", hecke_final)
+        self.assertNotIn("UnitGrpCtx", hecke_target)
+        self.assertNotIn("proof_complete=true", hecke_final)
+        self.assertNotIn("target_signature[1] + target_signature[2] - 1", hecke_final)
+
+        _, magma_target, magma_final = magma_programs(sample)
+        self.assertIn("unit_map_target(U_target.i)", magma_final)
+        self.assertIn("Order(U_target.i) eq 0", magma_final)
+        self.assertIn('printf "fundamental_unit_count=%o\\n"', magma_final)
+        self.assertNotIn("UnitRank", magma_final)
+        self.assertNotIn("fundamental_units_target", magma_target)
+
+    def test_hecke_jit_pair_reads_both_unit_groups(self) -> None:
+        sample = SampleRequest(
+            field=field("target", -5),
+            operation="class_unit_proven",
+            sample_kind="cold_process",
+            sample_index=0,
+            warmup=None,
+            seed=7,
+            jit_repetitions=1,
+        )
+        _, _, final = hecke_programs(sample)
+        self.assertIn(
+            "length(first_unit_ctx.units) == length(repeat_unit_ctx.units)",
+            final,
+        )
+        self.assertIn("!first_class_ctx.GRH && !repeat_class_ctx.GRH", final)
+        self.assertIn("bench_unit_group_grh_free(first_O, first_unit_ctx)", final)
+        self.assertIn("bench_unit_group_grh_free(repeat_O, repeat_unit_ctx)", final)
 
 
 if __name__ == "__main__":

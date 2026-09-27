@@ -39,6 +39,7 @@ from .base import (
     successful_probe,
     unavailable,
     unavailable_probe,
+    unit_count_error,
 )
 
 
@@ -348,7 +349,7 @@ print("component_bnfinit_ms=", bnfinit_ms);
 print("component_certification_ms=", certification_ms);
 print("class_order=", b.no);
 print("class_invariants=", b.cyc);
-print("unit_rank=", b.r1 + b.r2 - 1);
+print("fundamental_unit_count=", #b.fu);
 print("polynomial_discriminant=", poldisc(P));
 print("maximal_order_discriminant=", b.disc);
 print("signature_r1=", b.r1);
@@ -437,7 +438,7 @@ def _result(request: SampleRequest, values: dict[str, str]) -> dict[str, Any]:
         return {
             "class_order": values.get("class_order"),
             "class_invariants": _parse_invariants(values.get("class_invariants")),
-            "unit_rank": parse_int(values, "unit_rank"),
+            "unit_rank": parse_int(values, "fundamental_unit_count"),
             "signature": [r1, r2] if r1 is not None and r2 is not None else None,
             "polynomial_discriminant": values.get("polynomial_discriminant"),
             "maximal_order_discriminant": values.get(
@@ -633,7 +634,16 @@ class PariBackend(BackendAdapter):
         result = _result(request, values)
         certified = parse_bool(values, "certified") is True
         process_success = process_state_is_valid(process) and process["success"]
-        result_complete = process_success and _complete(request, result, certified)
+        unit_error = (
+            unit_count_error("PARI", result)
+            if request.operation == "class_unit_proven"
+            else None
+        )
+        result_complete = (
+            process_success
+            and _complete(request, result, certified)
+            and unit_error is None
+        )
         reported_threads = parse_int(values, "reported_threads")
         thread_count = {
             "requested": _REQUESTED_THREADS,
@@ -703,6 +713,8 @@ class PariBackend(BackendAdapter):
                 "PARI thread-count contract failed: requested "
                 f"{_REQUESTED_THREADS}, reported {reported_threads!r}"
             )
+        if not success and error is None and unit_error is not None:
+            error = unit_error
         if not success and error is None:
             error = "PARI operation failed or returned incomplete output"
         if success:

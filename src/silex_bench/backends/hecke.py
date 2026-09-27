@@ -40,6 +40,7 @@ from .base import (
     successful_probe,
     unavailable,
     unavailable_probe,
+    unit_count_error,
 )
 
 
@@ -232,6 +233,12 @@ end
 function bench_field(f)
   return number_field(f, "a", cached = false)
 end
+
+# Hecke clears UnitGrpCtx.GRH only after its unconditional unit proof, which it
+# skips when the unit rank is zero (_class_unit_group in Clgp.jl).
+function bench_unit_group_grh_free(O, unit_ctx)
+  return !unit_ctx.GRH || Hecke.unit_group_rank(O) == 0
+end
 """
 
 
@@ -355,14 +362,17 @@ def _standard_result(operation: str) -> str:
     if operation == "class_unit_proven":
         return """
 target_signature = signature(target_K)
+target_class_ctx = get_attribute(target_O, :ClassGrpCtx)
+target_unit_ctx = get_attribute(target_O, :UnitGrpCtx)
 println("class_order=", order(target_C))
 println("class_invariants=", join(string.(elementary_divisors(target_C)), ","))
-println("unit_rank=", target_signature[1] + target_signature[2] - 1)
+println("fundamental_unit_count=", length(target_unit_ctx.units))
 println("signature_r1=", target_signature[1])
 println("signature_r2=", target_signature[2])
 println("polynomial_discriminant=", discriminant(P))
 println("maximal_order_discriminant=", discriminant(target_O))
-println("proof_complete=true")
+println("class_group_grh_free=", !target_class_ctx.GRH)
+println("unit_group_grh_free=", bench_unit_group_grh_free(target_O, target_unit_ctx))
 """
     if operation == "maximal_order":
         return """
@@ -390,20 +400,33 @@ first_signature = signature(first_K)
 repeat_signature = signature(repeat_K)
 first_invariants = elementary_divisors(first_C)
 repeat_invariants = elementary_divisors(repeat_C)
+first_class_ctx = get_attribute(first_O, :ClassGrpCtx)
+repeat_class_ctx = get_attribute(repeat_O, :ClassGrpCtx)
+first_unit_ctx = get_attribute(first_O, :UnitGrpCtx)
+repeat_unit_ctx = get_attribute(repeat_O, :UnitGrpCtx)
 jit_results_agree = (
   order(first_C) == order(repeat_C) &&
   first_invariants == repeat_invariants &&
+  length(first_unit_ctx.units) == length(repeat_unit_ctx.units) &&
   first_signature == repeat_signature &&
   discriminant(first_O) == discriminant(repeat_O)
 )
 println("class_order=", order(repeat_C))
 println("class_invariants=", join(string.(repeat_invariants), ","))
-println("unit_rank=", repeat_signature[1] + repeat_signature[2] - 1)
+println("fundamental_unit_count=", length(repeat_unit_ctx.units))
 println("signature_r1=", repeat_signature[1])
 println("signature_r2=", repeat_signature[2])
 println("polynomial_discriminant=", discriminant(P))
 println("maximal_order_discriminant=", discriminant(repeat_O))
-println("proof_complete=true")
+println(
+  "class_group_grh_free=",
+  !first_class_ctx.GRH && !repeat_class_ctx.GRH,
+)
+println(
+  "unit_group_grh_free=",
+  bench_unit_group_grh_free(first_O, first_unit_ctx) &&
+    bench_unit_group_grh_free(repeat_O, repeat_unit_ctx),
+)
 println("jit_results_agree=", jit_results_agree)
 """
     if operation == "maximal_order":
@@ -496,7 +519,7 @@ def _result(request: SampleRequest, values: dict[str, str]) -> dict[str, Any]:
         return {
             "class_order": values.get("class_order"),
             "class_invariants": _parse_invariants(values.get("class_invariants")),
-            "unit_rank": parse_int(values, "unit_rank"),
+            "unit_rank": parse_int(values, "fundamental_unit_count"),
             "signature": [r1, r2] if r1 is not None and r2 is not None else None,
             "polynomial_discriminant": values.get("polynomial_discriminant"),
             "maximal_order_discriminant": values.get(
@@ -759,27 +782,35 @@ readline(stdin)
         )
         values = parse_key_values(process.get("stdout", ""))
         result = _result(request, values)
-        proven = parse_bool(values, "proof_complete") is True
+        class_group_proven = parse_bool(values, "class_group_grh_free") is True
+        unit_group_proven = parse_bool(values, "unit_group_grh_free") is True
+        proven = class_group_proven and unit_group_proven
         paired = request.jit_repetitions == 1
         results_agree = (
             parse_bool(values, "jit_results_agree") is True
             if paired
             else True
         )
+        unit_error = (
+            unit_count_error("Hecke", result)
+            if request.operation == "class_unit_proven"
+            else None
+        )
         success = (
             process_state_is_valid(process)
             and process["success"]
             and _complete(request, result, proven)
             and results_agree
+            and unit_error is None
         )
         if request.operation == "class_unit_proven":
             proof = {
                 "certification_status": "proven" if proven else "failed",
                 "class_group_proof_status": (
-                    "proven" if proven else "unknown"
+                    "proven" if class_group_proven else "unknown"
                 ),
                 "unit_group_proof_status": (
-                    "proven" if proven else "unknown"
+                    "proven" if unit_group_proven else "unknown"
                 ),
                 "regulator_proof_status": (
                     "proven" if proven else "unknown"
@@ -834,6 +865,8 @@ readline(stdin)
         error = process.get("error")
         if not success and error is None and paired and not results_agree:
             error = "Hecke first-call and repeat-call results disagreed"
+        if not success and error is None and unit_error is not None:
+            error = unit_error
         if not success and error is None:
             error = "Hecke operation failed or returned incomplete output"
         timing_samples = _timing_sample_payloads(

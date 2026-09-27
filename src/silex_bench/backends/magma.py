@@ -37,6 +37,7 @@ from .base import (
     successful_probe,
     unavailable,
     unavailable_probe,
+    unit_count_error,
 )
 
 
@@ -154,7 +155,11 @@ printf "{_TARGET_MARKER}:{TARGET_NONCE_PLACEHOLDER}\\n";
 r1_target, r2_target := Signature(K_target);
 printf "class_order=%o\\n", Order(C_target);
 printf "class_invariants=%o\\n", AbelianInvariants(C_target);
-printf "unit_rank=%o\\n", UnitRank(O_target);
+fundamental_units_target := [
+    unit_map_target(U_target.i) : i in [1..Ngens(U_target)]
+    | Order(U_target.i) eq 0
+];
+printf "fundamental_unit_count=%o\\n", #fundamental_units_target;
 printf "signature_r1=%o\\n", r1_target;
 printf "signature_r2=%o\\n", r2_target;
 printf "maximal_order_discriminant=%o\\n", Discriminant(O_target);
@@ -247,7 +252,7 @@ def _normalized_result(
             "class_invariants": _parse_invariants(
                 values.get("class_invariants")
             ),
-            "unit_rank": parse_int(values, "unit_rank"),
+            "unit_rank": parse_int(values, "fundamental_unit_count"),
             "signature": [r1, r2]
             if r1 is not None and r2 is not None
             else None,
@@ -425,7 +430,12 @@ quit;
         values = parse_key_values(str(raw.get("stdout", "")))
         result, missing = _normalized_result(request.operation, values)
         process_success = process_state_is_valid(raw) and raw["success"]
-        success = process_success and not missing
+        unit_error = (
+            unit_count_error("Magma", result)
+            if request.operation == "class_unit_proven" and not missing
+            else None
+        )
+        success = process_success and not missing and unit_error is None
         license_failure = _is_license_failure(raw)
         if success:
             status = "ok"
@@ -444,9 +454,17 @@ quit;
                     "Magma output omitted required values: "
                     + ", ".join(missing)
                 )
+            elif process_success and unit_error is not None:
+                run_error = unit_error
 
         proof: dict[str, Any] = {}
         if request.operation == "class_unit_proven":
+            # The V2.28 handbook documents no intrinsic that reports the
+            # proof state of a computed class or unit group.  The labels
+            # therefore come from the call contract: ClassGroup with
+            # Proof := "Full" returns a guaranteed result and UnitGroup with
+            # GRH := false runs its rigorous proof phase, so a call that
+            # returns a complete, count-checked result is proven.
             proof = {
                 "certification_status": "proven" if success else "unknown",
                 "class_group_proof_status": (

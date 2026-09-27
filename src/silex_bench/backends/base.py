@@ -152,3 +152,31 @@ def parse_bool(values: dict[str, str], key: str) -> bool | None:
     if lowered in {"0", "false"}:
         return False
     return None
+
+
+def unit_count_error(engine: str, result: dict[str, Any]) -> str | None:
+    """Return why a class/unit result's returned unit count is unusable.
+
+    External adapters report ``unit_rank`` as the number of fundamental units
+    read back from the engine's returned unit group.  A proven unit group must
+    contain exactly ``r1 + r2 - 1`` of them (Dirichlet's unit theorem), so a
+    different count means the engine returned an incomplete or inconsistent
+    unit group.  Missing values are reported by the adapter's completeness
+    check instead.
+    """
+    count = result.get("unit_rank")
+    signature = result.get("signature")
+    if (
+        type(count) is not int
+        or type(signature) is not list
+        or len(signature) != 2
+        or any(type(value) is not int for value in signature)
+    ):
+        return None
+    expected = signature[0] + signature[1] - 1
+    if count == expected:
+        return None
+    return (
+        f"{engine} returned {count} fundamental units; the field signature "
+        f"requires r1 + r2 - 1 = {expected}"
+    )
