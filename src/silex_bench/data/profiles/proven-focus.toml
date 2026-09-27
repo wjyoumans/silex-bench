@@ -1,0 +1,17 @@
+schema_version = 1
+id = "proven-focus"
+description = "Opt-in bounded proven comparison; select workloads and cases explicitly."
+include_tags = ["dev"]
+exclude_tags = []
+repetitions = 9
+jit_repetitions = 1
+timeout_seconds = 60
+budget_seconds = 1200
+threads = 1
+publication = false
+minimum_repetitions = 1
+require_clean_sources = true
+
+[metrics.degree]
+min = 2
+max = 6

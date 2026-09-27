@@ -8,13 +8,16 @@ import tomllib
 import unittest
 from pathlib import Path
 
+from silex_bench.campaign import build_plan
 from silex_bench.configuration import (
     CONFIG_SCHEMA_VERSION,
     RunOverrides,
     effective_execution,
     load_profile,
     load_suite,
+    load_tools,
 )
+from silex_bench.registry import builtin_registry
 from silex_bench.resources import builtin_names, builtin_path, resolve_path
 from silex_bench.workloads import (
     CLASS_UNIT,
@@ -62,7 +65,7 @@ class BuiltinResourceTests(unittest.TestCase):
         self.assertEqual(builtin_names("suites"), ("number-field",))
         self.assertEqual(
             builtin_names("profiles"),
-            ("dev", "publication", "quick", "scale"),
+            ("dev", "proven-focus", "publication", "quick", "scale"),
         )
         self.assertEqual(
             builtin_names("corpora"),
@@ -90,6 +93,7 @@ class BuiltinResourceTests(unittest.TestCase):
         expected = {
             "quick": (1, 0, 180.0),
             "dev": (3, 1, 300.0),
+            "proven-focus": (9, 1, 60.0),
             "scale": (5, 1, 3600.0),
             "publication": (3, 1, 60.0),
         }
@@ -121,6 +125,92 @@ class BuiltinResourceTests(unittest.TestCase):
                 }
             ],
         )
+
+    def test_proven_focus_profile_keeps_bounded_exploratory_policy(self) -> None:
+        profile = load_profile(builtin_path("profiles", "proven-focus"))
+        execution = effective_execution(profile, RunOverrides())
+        self.assertEqual(profile.id, "proven-focus")
+        self.assertEqual(execution["include_tags"], ["dev"])
+        self.assertEqual(execution["exclude_tags"], [])
+        self.assertEqual(execution["backend_exclusions"], [])
+        self.assertEqual(execution["metrics"], {"degree": [2.0, 6.0]})
+        self.assertEqual(execution["repetitions"], 9)
+        self.assertEqual(execution["jit_repetitions"], 1)
+        self.assertEqual(execution["threads"], 1)
+        self.assertEqual(execution["timeout_seconds"], 60.0)
+        self.assertEqual(execution["budget_seconds"], 1200.0)
+        self.assertTrue(execution["require_clean_sources"])
+        self.assertFalse(execution["publication"])
+        self.assertEqual(execution["minimum_repetitions"], 1)
+        self.assertIsNone(execution["cpu"])
+
+    def test_proven_focus_explicit_class_unit_plan_requires_silex_pari(self) -> None:
+        expected_degrees = {
+            "real_quadratic_5_proven": 2,
+            "cubic_disc81_proven": 3,
+            "quartic_disc1856_proven": 4,
+            "quintic_disc4417_proven": 5,
+        }
+        plan = build_plan(
+            ROOT,
+            load_suite(builtin_path("suites", "number-field")),
+            load_profile(builtin_path("profiles", "proven-focus")),
+            load_tools(None),
+            RunOverrides(
+                workloads=(CLASS_UNIT,),
+                backends=("silex", "pari"),
+                required_pairs=(("silex", "pari"),),
+                case_ids=tuple(expected_degrees),
+            ),
+            builtin_registry(),
+            performance=True,
+        )
+        self.assertEqual(plan.workloads, (CLASS_UNIT,))
+        self.assertEqual(plan.backends, ("silex", "pari"))
+        self.assertEqual(plan.required_pairs, (("silex", "pari"),))
+        self.assertEqual(len(plan.cases), 4)
+        self.assertEqual(
+            {case.id: case.metrics["degree"] for case in plan.cases},
+            expected_degrees,
+        )
+        self.assertEqual(plan.sample_count, 72)
+        # The profile ceiling preserves the corpus's shorter observation hints.
+        self.assertEqual(plan.nominal_timeout_product_seconds, 720.0)
+        self.assertLess(
+            plan.nominal_timeout_product_seconds, plan.execution["budget_seconds"]
+        )
+        for case in plan.cases:
+            with self.subTest(case=case.key):
+                self.assertEqual(case.workload, CLASS_UNIT)
+                self.assertIn("dev", case.tags)
+                self.assertEqual(case.expected_status, "success")
+                self.assertTrue(case.performance_eligible)
+                self.assertEqual(case.input["timeout_seconds"], 10)
+
+    def test_proven_focus_expected_failures_cannot_be_timing_successes(self) -> None:
+        failure_ids = (
+            "quartic_disc1412343_proven",
+            "quintic_disc401370255_proven",
+        )
+        suite = load_suite(builtin_path("suites", "number-field"))
+        profile = load_profile(builtin_path("profiles", "proven-focus"))
+        cases = load_cases(suite.corpora, (CLASS_UNIT,))
+        execution = effective_execution(profile, RunOverrides(case_ids=failure_ids))
+        diagnostics = select_cases(cases, execution, performance=False)
+        self.assertEqual({case.id for case in diagnostics}, set(failure_ids))
+        self.assertEqual(select_cases(cases, execution, performance=True), [])
+        contract = builtin_registry().workloads[CLASS_UNIT]
+        for case in diagnostics:
+            with self.subTest(case=case.key):
+                self.assertEqual(case.expected_status, "failure")
+                self.assertFalse(case.performance_eligible)
+                self.assertNotIn("dev", case.tags)
+                for backend in ("silex", "pari"):
+                    with self.subTest(backend=backend):
+                        validation = contract.validate_observation(case, backend, {}, {})
+                        self.assertFalse(validation.success)
+                        self.assertEqual(validation.checks, {"expected_success": False})
+                        self.assertIn("expected-failure", validation.errors[0])
 
     def test_publication_corpus_uses_all_fields_and_bounds_square_roots(self) -> None:
         suite = load_suite(builtin_path("suites", "number-field"))
