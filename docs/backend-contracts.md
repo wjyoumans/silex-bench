@@ -108,7 +108,11 @@ only the class-group and unit-group calls are timed. Result extraction,
 serialization, and correctness comparison happen afterward. The supervisor's
 nonce-bound ready/target markers independently audit those boundaries and
 enforce the observation deadline; its marked wall and CPU values remain in the
-sample diagnostics. Integrated S-unit comparisons use their supervisor-measured
+sample diagnostics. The marked wall interval (`target_wall_ms`) runs from
+writing the target's input to observing its target marker line, so it also
+includes writing that input (up to 1 MiB) and the harness's own wake latency
+in reading the marker off the target's stdout; it is not purely the target's
+own execution time. Integrated S-unit comparisons use their supervisor-measured
 whole-process wall envelope and label that different scope and clock explicitly.
 
 Clock identities remain backend-specific: Silex uses `steady_clock`, Hecke

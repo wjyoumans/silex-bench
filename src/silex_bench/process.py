@@ -313,7 +313,13 @@ def main():
     wakeup_read, wakeup_write = os.pipe()
     os.set_blocking(wakeup_read, False)
     os.set_blocking(wakeup_write, False)
-    signal.set_wakeup_fd(wakeup_write)
+    # The pipe only needs to be readable to wake the select() below; it does
+    # not need to hold every queued signal byte. Without
+    # warn_on_full_buffer=False, more than 64 KiB of queued signals (for
+    # example, a target that forks many short-lived children) would make
+    # Python write a warning to this process's stderr, which is the captured
+    # backend stderr (T-045 review, suggestion 5).
+    signal.set_wakeup_fd(wakeup_write, warn_on_full_buffer=False)
 
     control_fd = int(os.environ[CONTROL_FD_ENV])
     if not has_children_support():
@@ -339,9 +345,13 @@ def main():
     target_executable = os.environ[EXECUTABLE_ENV]
     # This pins the supervisor itself, away from the target CPU (chosen by
     # _supervisor_housekeeping_cpus in the parent); the target is pinned to
-    # the requested CPU separately, through taskset. An empty value means no
-    # housekeeping CPU could be found (see that function's fallback tiers),
-    # so the supervisor keeps its inherited affinity.
+    # the requested CPU separately, through taskset. The value is empty only
+    # when no CPU pinning was requested at all (cpu is None): in that case
+    # there is no target CPU to keep the supervisor off of, so it keeps its
+    # inherited affinity. When a CPU was requested, _supervisor_housekeeping_
+    # cpus always returns a non-empty set (its fallback tiers include the
+    # target CPU itself as a last resort), so this value is never empty in
+    # that case.
     affinity_text = os.environ.get(AFFINITY_ENV, "")
     housekeeping_cpus = {
         int(value) for value in affinity_text.split(",") if value
@@ -1250,7 +1260,11 @@ def run_process(
                 pinned,
                 cwd=cwd,
                 env=env,
-                stdin=subprocess.PIPE if stdin is not None else None,
+                # DEVNULL, not None, when there is no caller-supplied input:
+                # None would let the target inherit this harness's own stdin,
+                # so it could consume a user's terminal or piped input
+                # (T-042 review L1).
+                stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
                 deadline=deadline,
             )
         finally:
@@ -1265,6 +1279,11 @@ def run_process(
             remaining,
         )
         if capture_error is not None:
+            # Capture the elapsed wall time at classification, before
+            # _stop_process spends its own cleanup budget (up to about 2 s):
+            # otherwise a timeout row would report more than the deadline
+            # (T-042 review L2).
+            elapsed_ms = (time.perf_counter_ns() - start) / 1_000_000
             returncode, stdout_tail, stderr_tail = _stop_process(process)
             _extend_limited(stdout, stdout_tail)
             _extend_limited(stderr, stderr_tail)
@@ -1273,14 +1292,15 @@ def run_process(
                 "success": False,
                 "timeout": capture_error == "process timed out",
                 "returncode": returncode,
-                "process_wall_ms":
-                    (time.perf_counter_ns() - start) / 1_000_000,
+                "process_wall_ms": elapsed_ms,
                 **execution_evidence,
                 "stdout": stdout.decode(errors="replace"),
                 "stderr": stderr.decode(errors="replace"),
                 "error": capture_error,
             }
     except (subprocess.TimeoutExpired, _ObservationDeadlineExpired) as exc:
+        # Same rationale as above: classify the wall time before cleanup.
+        elapsed_ms = (time.perf_counter_ns() - start) / 1_000_000
         if process is None:
             returncode, stdout_tail, stderr_tail = None, b"", b""
         else:
@@ -1290,7 +1310,7 @@ def run_process(
             "success": False,
             "timeout": True,
             "returncode": returncode,
-            "process_wall_ms": (time.perf_counter_ns() - start) / 1_000_000,
+            "process_wall_ms": elapsed_ms,
             **execution_evidence,
             "stdout": stdout_tail.decode(errors="replace"),
             "stderr": stderr_tail.decode(errors="replace"),
@@ -1386,11 +1406,28 @@ def run_marked_process(
 
     stdout_output = bytearray()
     stderr_output = bytearray()
+    # complete_lines() incremental scan state (T-042 review L3): rather than
+    # re-copying and re-splitting the whole segment since start_offset on
+    # every call (quadratic in the number of reads for a chatty target),
+    # cache the lines already confirmed complete and only re-scan the
+    # unterminated tail since the last call, appending any newly-arrived
+    # bytes to it. Reset whenever start_offset itself changes (a new phase).
+    line_scan_offset = 0
+    line_scan_tail_start = 0
+    line_scan_complete: list[bytes] = []
     process_start = time.perf_counter_ns()
     deadline = time.monotonic() + timeout
     process: subprocess.Popen[bytes] | None = None
     target_pid: int | None = None
     effective_affinity: list[int] | None = None
+    # Re-read after the target marker (T-042 review L6): the readiness check
+    # above only shows the affinity a backend or runtime started with, and a
+    # backend or its runtime (OpenMP, Julia) could still change it during the
+    # measured interval. This is diagnostic only; unlike the readiness check,
+    # a mismatch here does not fail the sample (that is a policy choice left
+    # open, since making it a failure condition would change what counts as a
+    # successful sample).
+    effective_affinity_after_target: list[int] | None = None
     open_streams: dict[int, bytearray] = {}
 
     def consume_readable(readable: list[int]) -> bool:
@@ -1418,16 +1455,19 @@ def run_marked_process(
         readable, _, _ = select.select(list(open_streams), [], [], wait)
         return bool(readable) and consume_readable(readable)
 
-    def write_input(value: str) -> bool:
+    def write_input(value: str) -> str:
+        # Returns "ok", "timeout", or "broken_pipe": distinct outcomes, so a
+        # closed pipe is reported for what it is rather than folded into the
+        # generic "timed out" reason (T-042 review L5).
         if process is None or process.stdin is None:
-            return False
+            return "timeout"
         descriptor = process.stdin.fileno()
         data = value.encode()
         offset = 0
         while offset < len(data):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                return False
+                return "timeout"
             readable, writable, _ = select.select(
                 list(open_streams), [descriptor], [], remaining
             )
@@ -1442,19 +1482,40 @@ def run_marked_process(
             except (BlockingIOError, InterruptedError):
                 continue
             except BrokenPipeError:
-                return False
+                return "broken_pipe"
             if written <= 0:
-                return False
+                return "broken_pipe"
             offset += written
-        return True
+        return "ok"
+
+    def write_input_or_fail(value: str, phase: str) -> dict[str, Any] | None:
+        status = write_input(value)
+        if status == "ok":
+            return None
+        if status == "broken_pipe":
+            return failure(
+                f"marked process input pipe closed while writing {phase} input",
+                timed_out=False,
+            )
+        return failure(f"marked process timed out writing {phase} input")
 
     def complete_lines(*, start_offset: int = 0) -> list[bytes]:
-        segment = bytes(stdout_output[start_offset:])
-        return [
-            line.rstrip(b"\r\n")
-            for line in segment.splitlines(keepends=True)
-            if line.endswith((b"\n", b"\r"))
-        ]
+        nonlocal line_scan_offset, line_scan_tail_start, line_scan_complete
+        if start_offset != line_scan_offset:
+            line_scan_offset = start_offset
+            line_scan_tail_start = start_offset
+            line_scan_complete = []
+        if line_scan_tail_start < len(stdout_output):
+            segment = bytes(stdout_output[line_scan_tail_start:])
+            pieces = segment.splitlines(keepends=True)
+            incomplete = b""
+            if pieces and not pieces[-1].endswith((b"\n", b"\r")):
+                incomplete = pieces.pop()
+            line_scan_complete.extend(line.rstrip(b"\r\n") for line in pieces)
+            line_scan_tail_start = len(stdout_output) - len(incomplete)
+        # Callers only read this list (membership test or iteration); they
+        # must not mutate it, since it is the live cache, not a fresh copy.
+        return line_scan_complete
 
     def has_complete_line(marker: str, *, start_offset: int = 0) -> bool:
         return marker.encode("ascii") in complete_lines(start_offset=start_offset)
@@ -1508,9 +1569,13 @@ def run_marked_process(
 
     def failure(message: str, *, timed_out: bool | None = None) -> dict[str, Any]:
         # Classify at the failure boundary, before process-tree cleanup adds
-        # elapsed time. Launch exceptions carry their classification separately.
+        # elapsed time (both the timeout/success classification and the
+        # reported wall time: cleanup can take up to about 2 s, and a
+        # timeout row must not report more than the deadline, T-042 review
+        # L2). Launch exceptions carry their classification separately.
         if timed_out is None:
             timed_out = time.monotonic() >= deadline
+        elapsed_ms = (time.perf_counter_ns() - process_start) / 1_000_000
         if process is None:
             returncode = None
         else:
@@ -1520,10 +1585,10 @@ def run_marked_process(
             "success": False,
             "timeout": timed_out,
             "returncode": returncode,
-            "process_wall_ms":
-                (time.perf_counter_ns() - process_start) / 1_000_000,
+            "process_wall_ms": elapsed_ms,
             **execution_evidence,
             "effective_affinity": effective_affinity,
+            "effective_affinity_after_target": effective_affinity_after_target,
             "stdout": stdout_output.decode(errors="replace"),
             "stderr": stderr_output.decode(errors="replace"),
             "error": message,
@@ -1549,8 +1614,8 @@ def run_marked_process(
         os.set_blocking(process.stdin.fileno(), False)
         os.set_blocking(process.stdout.fileno(), False)
         os.set_blocking(process.stderr.fileno(), False)
-        if not write_input(ready_input):
-            return failure("marked process timed out writing ready input")
+        if (write_failure := write_input_or_fail(ready_input, "ready")) is not None:
+            return write_failure
         if not read_until(ready_marker):
             return failure("marked process did not reach ready marker")
         if has_marker_namespace(target_marker):
@@ -1590,8 +1655,10 @@ def run_marked_process(
         target_cpu_start = process_cpu_runtime_ns(target_pid)
         target_start = time.perf_counter_ns()
         target_output_start = len(stdout_output)
-        if not write_input(nonce_target_input):
-            return failure("marked process timed out writing target input")
+        if (
+            write_failure := write_input_or_fail(nonce_target_input, "target")
+        ) is not None:
+            return write_failure
         target_marker_state = read_until_target(
             target_marker,
             nonce_target_marker,
@@ -1611,8 +1678,16 @@ def run_marked_process(
         ):
             target_cpu_ms = (target_cpu_end - target_cpu_start) / 1_000_000
 
-        if not write_input(final_input):
-            return failure("marked process timed out writing final input")
+        if cpu is not None:
+            try:
+                effective_affinity_after_target = sorted(
+                    os.sched_getaffinity(target_pid)
+                )
+            except (AttributeError, OSError):
+                effective_affinity_after_target = None
+
+        if (write_failure := write_input_or_fail(final_input, "final")) is not None:
+            return write_failure
         _close_stdin(process)
         if not drain_until_exit():
             return failure("marked process timed out after target marker")
@@ -1641,6 +1716,7 @@ def run_marked_process(
         "target_wall_ms": target_wall_ms,
         **execution_evidence,
         "effective_affinity": effective_affinity,
+        "effective_affinity_after_target": effective_affinity_after_target,
         "stdout": stdout_output.decode(errors="replace"),
         "stderr": stderr_output.decode(errors="replace"),
     }

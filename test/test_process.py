@@ -563,6 +563,20 @@ class ProcessTests(unittest.TestCase):
             self.assertEqual(failure["returncode"], 7)
             self.assertIn("bad", failure["stdout"])
 
+    def test_process_without_stdin_does_not_inherit_the_harness_stdin(self) -> None:
+        # T-042 review L1: stdin=None used to let the target read from this
+        # test process's own stdin. Reading it here would hang if that were
+        # still true (nothing writes to this test's stdin); with the fix
+        # (DEVNULL), the target's stdin.read() returns an immediate EOF.
+        with tempfile.TemporaryDirectory() as temporary:
+            result = run_process(
+                [sys.executable, "-c", "import sys; print('data=' + repr(sys.stdin.read()))"],
+                timeout=5.0,
+                cwd=Path(temporary),
+            )
+        self.assertTrue(result["success"])
+        self.assertEqual(parse_key_values(result["stdout"]), {"data": "''"})
+
     def test_process_malformed_argv_is_structured(self) -> None:
         cases = (
             ([], "contain an executable"),
@@ -739,13 +753,22 @@ class ProcessTests(unittest.TestCase):
             self.assertFalse(marker.exists())
 
     def test_marked_process_measures_only_target_segment(self) -> None:
+        # T-042 review T1: a bare ">= 0.0" assertion on target_wall_ms does
+        # not show that the ready and final phases are excluded from it. A
+        # sleep in each phase, well outside the target segment itself, lets
+        # target_wall_ms and process_wall_ms be told apart: target_wall_ms
+        # must stay far below either sleep, while process_wall_ms (the
+        # whole-process envelope) must exceed their sum.
         child = """
 import sys
+import time
 sys.stdin.readline()
+time.sleep(0.3)
 print("READY", flush=True)
 nonce = sys.stdin.readline().strip()
 print("TARGET:" + nonce, flush=True)
 sys.stdin.readline()
+time.sleep(0.3)
 print("answer=42", flush=True)
 """
         with tempfile.TemporaryDirectory() as temporary:
@@ -756,7 +779,7 @@ print("answer=42", flush=True)
                 final_input="finish\n",
                 ready_marker="READY",
                 target_marker="TARGET",
-                timeout=2.0,
+                timeout=5.0,
                 cwd=Path(temporary),
             )
             self.assertTrue(result["available"])
@@ -764,7 +787,51 @@ print("answer=42", flush=True)
             self.assertFalse(result["timeout"])
             self.assertIsNotNone(result["target_wall_ms"])
             self.assertGreaterEqual(result["target_wall_ms"], 0.0)
+            self.assertLess(result["target_wall_ms"], 150.0)
+            self.assertGreaterEqual(result["process_wall_ms"], 550.0)
             self.assertEqual(parse_key_values(result["stdout"])["answer"], "42")
+
+    def test_marked_process_handles_many_lines_across_both_phases(self) -> None:
+        # T-042 review L3: complete_lines() used to re-copy and re-split the
+        # whole captured segment since start_offset on every read, which is
+        # quadratic in the number of reads. This exercises its incremental
+        # rewrite with several thousand lines before and after the ready
+        # marker (a phase-offset change partway through), including a mix of
+        # \n, \r and \r\n terminators, and confirms every line still arrives
+        # intact and in order and that marker detection is unaffected.
+        line_count = 3000
+        child = f"""
+import sys
+sys.stdin.readline()
+for i in range({line_count}):
+    end = "\\r\\n" if i % 3 == 0 else ("\\r" if i % 3 == 1 else "\\n")
+    sys.stdout.write("before" + str(i) + end)
+print("READY", flush=True)
+nonce = sys.stdin.readline().strip()
+for i in range({line_count}):
+    end = "\\r\\n" if i % 3 == 0 else ("\\r" if i % 3 == 1 else "\\n")
+    sys.stdout.write("after" + str(i) + end)
+print("TARGET:" + nonce, flush=True)
+sys.stdin.readline()
+"""
+        with tempfile.TemporaryDirectory() as temporary:
+            result = run_marked_process(
+                [sys.executable, "-u", "-c", child],
+                ready_input="start\n",
+                target_input=TARGET_NONCE_PLACEHOLDER + "\n",
+                final_input="finish\n",
+                ready_marker="READY",
+                target_marker="TARGET",
+                timeout=10.0,
+                cwd=Path(temporary),
+            )
+        self.assertTrue(result["success"], result)
+        self.assertFalse(result["timeout"])
+        lines = result["stdout"].splitlines()
+        before_lines = [line for line in lines if line.startswith("before")]
+        after_lines = [line for line in lines if line.startswith("after")]
+        self.assertEqual(before_lines, [f"before{i}" for i in range(line_count)])
+        self.assertEqual(after_lines, [f"after{i}" for i in range(line_count)])
 
     def test_marked_process_rejects_target_marker_before_dispatch(self) -> None:
         child = """
@@ -1076,7 +1143,14 @@ sys.stdin.readline()
             )
             self.assertFalse(result["success"])
             self.assertTrue(result["timeout"])
-            self.assertLess(result["process_wall_ms"], 800.0)
+            # process_wall_ms is captured at classification, before
+            # _stop_process's cleanup budget (up to about 2 s) runs, so it
+            # should sit close to the 0.6 s deadline rather than include
+            # cleanup (T-042 review L2, T5: the wider 800 ms bound here was
+            # a workaround for that cleanup time and was timing-sensitive
+            # under load).
+            self.assertGreaterEqual(result["process_wall_ms"], 550.0)
+            self.assertLess(result["process_wall_ms"], 700.0)
 
     def test_requested_cpu_outside_current_affinity_is_unavailable(self) -> None:
         if not hasattr(os, "sched_getaffinity"):
@@ -1136,6 +1210,47 @@ sys.stdin.readline()
         self.assertEqual(result["effective_affinity"], [cpu])
         self.assertTrue(Path(result["launcher_executable"]).is_absolute())
         self.assertRegex(result["launcher_executable_sha256"], r"^[0-9a-f]{64}$")
+
+    def test_marked_process_re_checks_affinity_after_target_marker(self) -> None:
+        # T-042 review L6: the readiness check alone only shows the affinity
+        # a backend started with. Here the target changes its own affinity
+        # during the measured interval; the post-target re-check must catch
+        # that drift, but as a diagnostic only (it must not fail an
+        # otherwise-successful sample -- that policy choice is left open).
+        if not hasattr(os, "sched_getaffinity"):
+            self.skipTest("sched_getaffinity is unavailable")
+        if shutil.which("taskset") is None:
+            self.skipTest("taskset is unavailable")
+        available_cpus = sorted(os.sched_getaffinity(0))
+        if len(available_cpus) < 2:
+            self.skipTest("at least two available CPUs are required")
+        cpu, other_cpu = available_cpus[0], available_cpus[1]
+        child = f"""
+import os
+import sys
+sys.stdin.readline()
+print("READY", flush=True)
+nonce = sys.stdin.readline().strip()
+os.sched_setaffinity(0, {{{other_cpu}}})
+print("TARGET:" + nonce, flush=True)
+sys.stdin.readline()
+"""
+        with tempfile.TemporaryDirectory() as temporary:
+            result = run_marked_process(
+                [sys.executable, "-u", "-c", child],
+                ready_input="start\n",
+                target_input=TARGET_NONCE_PLACEHOLDER + "\n",
+                final_input="finish\n",
+                ready_marker="READY",
+                target_marker="TARGET",
+                timeout=2.0,
+                cwd=Path(temporary),
+                cpu=cpu,
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["effective_affinity"], [cpu])
+        self.assertEqual(result["effective_affinity_after_target"], [other_cpu])
 
     def test_cpu_pin_does_not_execute_path_selected_taskset(self) -> None:
         if not hasattr(os, "sched_getaffinity"):
@@ -1233,6 +1348,61 @@ time.sleep(2)
         self.assertFalse(result["success"])
         self.assertTrue(result["timeout"])
         self.assertLess(elapsed, 0.5)
+
+    def test_marked_process_records_early_exit_before_a_marker(self) -> None:
+        # T-042 review T3: nothing covered a marked target that exits, with
+        # its own exit code, before ever reaching a marker -- as distinct
+        # from a deadline timeout. The child reads the ready input (so the
+        # write itself succeeds) and then exits without printing READY.
+        with tempfile.TemporaryDirectory() as temporary:
+            result = run_marked_process(
+                [sys.executable, "-c", "import sys; sys.stdin.readline(); sys.exit(3)"],
+                ready_input="start\n",
+                target_input=TARGET_NONCE_PLACEHOLDER + "\n",
+                final_input="finish\n",
+                ready_marker="READY",
+                target_marker="TARGET",
+                timeout=5.0,
+                cwd=Path(temporary),
+            )
+        self.assertTrue(result["available"])
+        self.assertFalse(result["success"])
+        self.assertFalse(result["timeout"])
+        self.assertEqual(result["returncode"], 3)
+        self.assertEqual(result["error"], "marked process did not reach ready marker")
+
+    def test_marked_process_reports_broken_pipe_distinctly_from_timeout(self) -> None:
+        # T-042 review L5: a closed input pipe used to be reported with the
+        # same "timed out writing ... input" text as an actual deadline
+        # expiry, even though timeout was already False. The message must
+        # name the real cause instead.
+        child = """
+import sys
+import time
+sys.stdin.close()
+time.sleep(2)
+"""
+        with tempfile.TemporaryDirectory() as temporary:
+            result = run_marked_process(
+                [sys.executable, "-u", "-c", child],
+                # Larger than a pipe's default kernel buffer (64 KiB): the
+                # write must still be in progress, waiting for room, when the
+                # child's close() takes effect, so the harness observes the
+                # closed pipe instead of finishing the write beforehand.
+                ready_input="x" * (512 * 1024),
+                target_input=TARGET_NONCE_PLACEHOLDER + "\n",
+                final_input="finish\n",
+                ready_marker="READY",
+                target_marker="TARGET",
+                timeout=5.0,
+                cwd=Path(temporary),
+            )
+
+        self.assertFalse(result["success"])
+        self.assertFalse(result["timeout"])
+        self.assertIn("pipe closed", result["error"])
+        self.assertIn("ready input", result["error"])
+        self.assertNotIn("timed out", result["error"])
 
     def test_timeout_cleanup_does_not_call_unbounded_communicate(self) -> None:
         with tempfile.TemporaryDirectory() as temporary, mock.patch.object(
@@ -1339,6 +1509,66 @@ sys.stdin.readline()
         siblings = process_module._read_thread_siblings(cpu) or set()
         self.assertTrue(supervisor_cpus.isdisjoint(siblings))
         self.assertEqual(supervisor_cpus, expected_supervisor_cpus)
+
+    def test_supervisor_stays_asleep_during_the_run(self) -> None:
+        # T-045 review, suggestion 4: the H1 fix replaced a 5 ms poll (about
+        # 200 wakeups/s) with a blocking wait, but no regression test covered
+        # the blocking wait itself. Read the supervisor's own
+        # voluntary_ctxt_switches count from /proc twice, about 0.3 s apart,
+        # while it is blocked in that wait for the whole window (no target
+        # marker write or exit happens in between). A tolerant bound (a
+        # handful, not the ~60 a 5 ms poller would rack up in that window)
+        # catches a reintroduced poll without being flaky under host load.
+        if not hasattr(os, "sched_getaffinity"):
+            self.skipTest("sched_getaffinity is unavailable")
+        if shutil.which("taskset") is None:
+            self.skipTest("taskset is unavailable")
+        cpu = min(os.sched_getaffinity(0))
+        child = """
+import os
+import sys
+import time
+
+
+def voluntary_ctxt_switches(pid):
+    with open(f"/proc/{pid}/status") as handle:
+        for line in handle:
+            if line.startswith("voluntary_ctxt_switches:"):
+                return int(line.split(":", 1)[1].strip())
+    return None
+
+
+sys.stdin.readline()
+print("READY", flush=True)
+nonce = sys.stdin.readline().strip()
+before = voluntary_ctxt_switches(os.getppid())
+time.sleep(0.3)
+after = voluntary_ctxt_switches(os.getppid())
+print("BEFORE:" + str(before), flush=True)
+print("AFTER:" + str(after), flush=True)
+print("TARGET:" + nonce, flush=True)
+sys.stdin.readline()
+"""
+        with tempfile.TemporaryDirectory() as temporary:
+            result = run_marked_process(
+                [sys.executable, "-u", "-c", child],
+                ready_input="start\n",
+                target_input=TARGET_NONCE_PLACEHOLDER + "\n",
+                final_input="finish\n",
+                ready_marker="READY",
+                target_marker="TARGET",
+                timeout=3.0,
+                cwd=Path(temporary),
+                cpu=cpu,
+            )
+
+        self.assertTrue(result["success"], result)
+        lines = dict(
+            line.split(":", 1) for line in result["stdout"].splitlines() if ":" in line
+        )
+        before = int(lines["BEFORE"])
+        after = int(lines["AFTER"])
+        self.assertLessEqual(after - before, 8)
 
 
 class SupervisorHousekeepingCpuTests(unittest.TestCase):
@@ -1464,7 +1694,9 @@ class SupervisorSourceDescendantTests(unittest.TestCase):
                 installed_signums,
                 {signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGCHLD},
             )
-            set_wakeup_fd.assert_called_once_with(wakeup_write_fd)
+            set_wakeup_fd.assert_called_once_with(
+                wakeup_write_fd, warn_on_full_buffer=False
+            )
         finally:
             os.close(control_read_fd)
             os.close(control_write_fd)
