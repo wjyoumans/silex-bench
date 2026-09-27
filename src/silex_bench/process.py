@@ -33,11 +33,14 @@ _SUPERVISOR_HANDSHAKE_SECONDS = 5.0
 # On a stop request, the embedded supervisor now spends its bounded cleanup
 # budget at most once (see handle_stop_request/terminate_descendants in
 # _SUPERVISOR_SOURCE): up to 32 rounds of a 2 ms freeze-and-confirm loop
-# (about 0.07 s), then a single 0.75 s hard-kill loop, for a worst case of
-# about 0.82 s before the supervisor exits. This wait must clear that worst
-# case with margin so the harness does not give up, and SIGKILL the
-# supervisor's process group directly, before the supervisor's own bounded
-# cleanup has had a chance to finish (T-042 review L7).
+# (a nominal ~0.07 s), then a single 0.75 s hard-kill loop, for a nominal
+# sleep budget of about 0.82 s. That figure counts only the sleeps: each
+# round also pays for a full /proc walk, and the loop can overshoot its
+# deadline by up to one iteration, so actual worst-case latency (large
+# descendant tree, or under load) runs somewhat higher. This wait must clear
+# that worst case with margin so the harness does not give up, and SIGKILL
+# the supervisor's process group directly, before the supervisor's own
+# bounded cleanup has had a chance to finish (T-042 review L7).
 _SUPERVISOR_STOP_WAIT_SECONDS = 1.5
 _SUPERVISOR_FDS_ENV = "SILEX_BENCH_INTERNAL_SUPERVISOR_FDS"
 _SUPERVISOR_EXECUTABLE_ENV = "SILEX_BENCH_INTERNAL_SUPERVISOR_EXECUTABLE"
@@ -182,7 +185,7 @@ def signal_all(pids, signum):
             pass
 
 
-def kill_target_directly(pid):
+def kill_target_directly(pid, pidfd=None):
     # Fallback for the stop path, independent of /proc descendant
     # enumeration: SIGKILL the known target PID directly, unconditionally, so
     # the target itself cannot outlive a gap in descendant enumeration.
@@ -193,14 +196,35 @@ def kill_target_directly(pid):
     # walk /proc and reach descendants that escaped into their own session
     # (which do not share the target's group either). terminate_descendants()
     # still runs afterwards to confirm and reap the wider tree.
+    #
+    # Callers must only invoke this while the target is confirmed unreaped
+    # (Popen.returncode is still None); see handle_stop_request. That makes
+    # this pid race-free to read and signal here, since this process is the
+    # target's only reaper and does so solely through the explicit
+    # waitpid() calls elsewhere in this file, none of which run before this
+    # function returns. Reading the pgid up front, before sending any
+    # signal, keeps that guarantee even across the pidfd/kill calls below.
     try:
         pgid = os.getpgid(pid)
     except ProcessLookupError:
         pgid = None
-    try:
-        os.kill(pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
+    signaled_by_pidfd = False
+    if pidfd is not None:
+        # signal.pidfd_send_signal targets the specific process the pidfd
+        # was opened for (T-045), not a pid number, so it cannot hit a
+        # process that has reused a recycled pid. Prefer it whenever a
+        # pidfd is available (Linux 5.1+, Python 3.9+); os.kill(pid, ...)
+        # below is the fallback for older kernels/interpreters.
+        try:
+            signal.pidfd_send_signal(pidfd, signal.SIGKILL)
+            signaled_by_pidfd = True
+        except (AttributeError, ProcessLookupError, OSError):
+            signaled_by_pidfd = False
+    if not signaled_by_pidfd:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
     if pgid is not None and pgid != os.getpgrp():
         try:
             os.killpg(pgid, signal.SIGKILL)
@@ -208,8 +232,17 @@ def kill_target_directly(pid):
             pass
 
 
-def handle_stop_request(target_pid):
-    kill_target_directly(target_pid)
+def handle_stop_request(target, target_pidfd):
+    # Only signal the target while it is confirmed unreaped
+    # (Popen.poll()/Popen.wait() has not yet set target.returncode).  Once
+    # the target has been reaped, its pid is no longer held by this
+    # process's own child and the kernel is free to recycle it; signalling
+    # it (directly or via its process group) at that point could hit an
+    # unrelated same-UID process instead (T-047 review B1). Skip the direct
+    # kill in that case; terminate_descendants() below still runs to finish
+    # any orphan cleanup.
+    if target.returncode is None:
+        kill_target_directly(target.pid, target_pidfd)
     try:
         terminate_descendants()
     except BaseException:
@@ -362,7 +395,7 @@ def main():
 
     while True:
         if stop_requested:
-            handle_stop_request(target.pid)
+            handle_stop_request(target, target_pidfd)
         returncode = target.poll()
         if returncode is not None:
             while True:

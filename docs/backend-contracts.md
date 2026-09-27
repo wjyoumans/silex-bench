@@ -65,13 +65,28 @@ lifetime. Live descendant enumeration reads every thread's children file
 under `/proc/<pid>/task/*/children`, not only the thread-group leader's, so a
 child forked by a non-leader thread is not missed. On a stop request
 (timeout or interruption), the supervisor first sends `SIGKILL` straight to
-the known target PID and its own process group, independent of that
-enumeration, then still runs one bounded enumeration-and-kill pass (up to 32
-rounds of a 2 ms freeze-and-confirm loop, then a single 0.75 s hard-kill
-loop, about 0.82 s worst case) to confirm and reap the wider descendant tree;
-that pass is not retried a second time on failure. The harness's own stop
-path waits long enough for that single pass to finish before forcing the
-supervisor's process group closed itself.
+the known target PID, preferring a pidfd-scoped signal (immune to PID reuse)
+over a plain `kill(pid, ...)` where the pidfd is available, and this direct
+kill is skipped entirely once the target has already been reaped: signalling
+a PID (or a process group derived from it) after reap risks hitting an
+unrelated same-UID process that the kernel has since given that recycled
+PID. The supervisor also `SIGKILL`s the target's own process group, but only
+when that group differs from the supervisor's own; when the target has not
+called `setsid`, it shares the supervisor's group, and killing that group
+would kill the supervisor itself before it can finish enumerating the wider
+tree. Descendants that share the supervisor's own group are instead reached
+by the `/proc` walk below. Independent of the direct kill, the supervisor
+still runs one bounded enumeration-and-kill pass (up to 32 rounds of a 2 ms
+freeze-and-confirm loop, then a single 0.75 s hard-kill loop) to confirm and
+reap the wider descendant tree; that pass is not retried a second time on
+failure. The 2 ms/0.75 s figures are a nominal sleep budget, not a wall-clock
+bound: each round also pays for a full `/proc` walk, and the loop can
+overshoot its deadline by up to one iteration, so actual worst-case latency
+runs somewhat higher, especially for a large descendant tree or under load.
+The harness's own stop path budgets 1.5 s of margin over that nominal budget
+before forcing the supervisor's process group closed itself; giving the
+supervisor a way to report when its own cleanup pass has actually finished,
+instead of relying on a fixed wait, remains open as a follow-up.
 
 When a CPU is pinned, only the target is placed on the requested CPU (through
 `taskset`); the process supervisor itself runs on the remaining CPUs, chosen

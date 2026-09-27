@@ -12,6 +12,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest import mock
 
@@ -47,7 +48,12 @@ def _load_supervisor_namespace() -> dict[str, Any]:
     ``main()`` call at the bottom of the source does not run; the namespace's
     functions (``direct_children``, ``handle_stop_request``, and so on) can
     then be called and monkeypatched directly, without spawning a real
-    supervisor subprocess or touching this test process's own signal state.
+    supervisor subprocess. This exec() alone never touches this test
+    process's own signal state, since it only defines functions. A test
+    that goes on to call ``namespace["main"]()`` itself must still mock
+    ``signal.signal``/``signal.set_wakeup_fd``/``os.pipe`` (see
+    ``test_missing_own_children_file_fails_closed_at_startup``), since
+    ``main()`` installs real handlers and a real wakeup fd otherwise.
     """
     namespace: dict[str, Any] = {"__name__": "test_supervisor_source"}
     exec(compile(process_module._SUPERVISOR_SOURCE, "<supervisor>", "exec"), namespace)
@@ -1378,6 +1384,36 @@ class SupervisorSourceDescendantTests(unittest.TestCase):
     a specific kernel's /proc support or spawning a real supervisor process.
     """
 
+    def setUp(self) -> None:
+        # Snapshot this test process's own signal disposition so tearDown
+        # can prove no test in this class leaked a change into it (T-047
+        # review B2): a test that calls the embedded supervisor's real
+        # main() must mock signal installation rather than let it touch
+        # this process's handlers or wakeup fd.
+        self._signal_snapshot = {
+            signum: signal.getsignal(signum)
+            for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGCHLD)
+        }
+        self._wakeup_fd_snapshot = signal.set_wakeup_fd(-1)
+        if self._wakeup_fd_snapshot != -1:
+            signal.set_wakeup_fd(self._wakeup_fd_snapshot)
+
+    def tearDown(self) -> None:
+        for signum, handler in self._signal_snapshot.items():
+            self.assertEqual(
+                signal.getsignal(signum),
+                handler,
+                f"test left signal {signum} handler changed in this process",
+            )
+        current_wakeup_fd = signal.set_wakeup_fd(-1)
+        if current_wakeup_fd != -1:
+            signal.set_wakeup_fd(current_wakeup_fd)
+        self.assertEqual(
+            current_wakeup_fd,
+            self._wakeup_fd_snapshot,
+            "test left this process's wakeup fd changed",
+        )
+
     def test_missing_own_children_file_fails_closed_at_startup(self) -> None:
         namespace = _load_supervisor_namespace()
         pid = os.getpid()
@@ -1389,21 +1425,51 @@ class SupervisorSourceDescendantTests(unittest.TestCase):
                 raise FileNotFoundError(path)
             return real_open(path, flags, *args, **kwargs)
 
-        read_fd, write_fd = os.pipe()
+        control_read_fd, control_write_fd = os.pipe()
+        # main() opens its own wakeup pipe; give it one under test control
+        # (mocked os.pipe below) so it never touches the real signal wakeup
+        # fd or leaks an untracked real pipe.
+        wakeup_read_fd, wakeup_write_fd = os.pipe()
+        signal_calls: list[tuple[int, Any]] = []
+
+        def fake_signal(signum, handler):
+            signal_calls.append((signum, handler))
+            return signal.SIG_DFL
+
         try:
-            environment = {process_module._SUPERVISOR_CONTROL_FD_ENV: str(write_fd)}
-            with mock.patch.object(os, "open", side_effect=fake_open), mock.patch.object(
+            environment = {process_module._SUPERVISOR_CONTROL_FD_ENV: str(control_write_fd)}
+            with mock.patch.object(
+                os, "open", side_effect=fake_open
+            ), mock.patch.object(
                 os, "_exit", side_effect=SystemExit
-            ) as exit_mock, mock.patch.dict(os.environ, environment, clear=False):
+            ) as exit_mock, mock.patch.object(
+                os, "pipe", return_value=(wakeup_read_fd, wakeup_write_fd)
+            ), mock.patch.object(
+                signal, "signal", side_effect=fake_signal
+            ), mock.patch.object(
+                signal, "set_wakeup_fd", return_value=-1
+            ) as set_wakeup_fd, mock.patch.dict(os.environ, environment, clear=False):
                 with self.assertRaises(SystemExit):
                     namespace["main"]()
             exit_mock.assert_called_once_with(126)
-            message = os.read(read_fd, 256).decode("ascii")
+            message = os.read(control_read_fd, 256).decode("ascii")
             self.assertIn("ERROR", message)
             self.assertIn("CONFIG_PROC_CHILDREN", message)
+            # main() must route its handler and wakeup-fd installation
+            # through the mocks above rather than the real signal module,
+            # so this test process's own signal state is left untouched
+            # (confirmed independently by tearDown's snapshot check).
+            installed_signums = {signum for signum, _ in signal_calls}
+            self.assertEqual(
+                installed_signums,
+                {signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGCHLD},
+            )
+            set_wakeup_fd.assert_called_once_with(wakeup_write_fd)
         finally:
-            os.close(read_fd)
-            os.close(write_fd)
+            os.close(control_read_fd)
+            os.close(control_write_fd)
+            os.close(wakeup_read_fd)
+            os.close(wakeup_write_fd)
 
     def test_has_children_support_reflects_the_probe_file(self) -> None:
         namespace = _load_supervisor_namespace()
@@ -1523,14 +1589,17 @@ class SupervisorSourceDescendantTests(unittest.TestCase):
     def test_stop_path_kills_target_directly_before_descendant_cleanup(self) -> None:
         namespace = _load_supervisor_namespace()
         order: list[str] = []
-        namespace["kill_target_directly"] = lambda pid: order.append(f"kill:{pid}")
+        namespace["kill_target_directly"] = lambda pid, pidfd: order.append(
+            f"kill:{pid}:{pidfd}"
+        )
         namespace["terminate_descendants"] = lambda: order.append("terminate") or True
+        target = SimpleNamespace(pid=4242, returncode=None)
 
         with mock.patch.object(os, "_exit", side_effect=SystemExit) as exit_mock:
             with self.assertRaises(SystemExit):
-                namespace["handle_stop_request"](4242)
+                namespace["handle_stop_request"](target, 99)
 
-        self.assertEqual(order, ["kill:4242", "terminate"])
+        self.assertEqual(order, ["kill:4242:99", "terminate"])
         exit_mock.assert_called_once_with(124)
 
     def test_stop_path_cleanup_failure_exits_once_without_a_second_full_pass(
@@ -1543,17 +1612,80 @@ class SupervisorSourceDescendantTests(unittest.TestCase):
             terminate_calls.append(1)
             raise RuntimeError("process descendants survived bounded cleanup")
 
-        namespace["kill_target_directly"] = lambda pid: None
+        namespace["kill_target_directly"] = lambda pid, pidfd: None
         namespace["terminate_descendants"] = failing_terminate
+        target = SimpleNamespace(pid=4242, returncode=None)
 
         with mock.patch.object(os, "_exit", side_effect=SystemExit) as exit_mock:
             with self.assertRaises(SystemExit):
-                namespace["handle_stop_request"](4242)
+                namespace["handle_stop_request"](target, 99)
 
         # The stop path must not retry the (already exhausted) cleanup budget
         # a second time; see T-042 review L7.
         self.assertEqual(len(terminate_calls), 1)
         exit_mock.assert_called_once_with(126)
+
+    def test_stop_after_reap_signals_neither_the_old_pid_nor_its_group(self) -> None:
+        # Regression for T-047 review B1: once Popen.poll() has reaped the
+        # target (target.returncode is set), the kernel is free to recycle
+        # its pid for an unrelated process. A stop request that arrives
+        # after that point must send no signal at all to that pid, its
+        # pgid, or via its pidfd -- only terminate_descendants() (the
+        # /proc-walk orphan cleanup) may still run.
+        namespace = _load_supervisor_namespace()
+        target = SimpleNamespace(pid=4242, returncode=0)
+        namespace["terminate_descendants"] = lambda: True
+
+        with mock.patch.object(os, "getpgid") as getpgid, mock.patch.object(
+            os, "kill"
+        ) as kill, mock.patch.object(os, "killpg") as killpg, mock.patch.object(
+            signal, "pidfd_send_signal", create=True
+        ) as pidfd_send_signal, mock.patch.object(
+            os, "_exit", side_effect=SystemExit
+        ) as exit_mock:
+            with self.assertRaises(SystemExit):
+                namespace["handle_stop_request"](target, 99)
+
+        getpgid.assert_not_called()
+        kill.assert_not_called()
+        killpg.assert_not_called()
+        pidfd_send_signal.assert_not_called()
+        exit_mock.assert_called_once_with(124)
+
+    def test_kill_target_directly_prefers_pidfd_send_signal_when_available(
+        self,
+    ) -> None:
+        # When a pidfd is available (T-045), it must be preferred over
+        # os.kill(pid, ...): it targets the exact process the pidfd was
+        # opened for, so it cannot hit a process that has since reused a
+        # recycled pid (T-047 review B1).
+        namespace = _load_supervisor_namespace()
+        with mock.patch.object(
+            os, "getpgid", return_value=777
+        ), mock.patch.object(os, "getpgrp", return_value=777), mock.patch.object(
+            os, "kill"
+        ) as kill, mock.patch.object(
+            signal, "pidfd_send_signal", create=True
+        ) as pidfd_send_signal:
+            namespace["kill_target_directly"](4242, 99)
+
+        pidfd_send_signal.assert_called_once_with(99, signal.SIGKILL)
+        kill.assert_not_called()
+
+    def test_kill_target_directly_falls_back_to_kill_when_pidfd_signal_fails(
+        self,
+    ) -> None:
+        namespace = _load_supervisor_namespace()
+        with mock.patch.object(
+            os, "getpgid", return_value=777
+        ), mock.patch.object(os, "getpgrp", return_value=777), mock.patch.object(
+            os, "kill"
+        ) as kill, mock.patch.object(
+            signal, "pidfd_send_signal", create=True, side_effect=OSError
+        ):
+            namespace["kill_target_directly"](4242, 99)
+
+        kill.assert_called_once_with(4242, signal.SIGKILL)
 
 
 if __name__ == "__main__":
