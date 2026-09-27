@@ -4,6 +4,7 @@ import fcntl
 import hashlib
 import json
 import os
+import random
 import shutil
 import signal
 import subprocess
@@ -832,6 +833,93 @@ sys.stdin.readline()
         after_lines = [line for line in lines if line.startswith("after")]
         self.assertEqual(before_lines, [f"before{i}" for i in range(line_count)])
         self.assertEqual(after_lines, [f"after{i}" for i in range(line_count)])
+
+    def test_split_complete_lines_holds_back_cr_split_from_its_newline(self) -> None:
+        # T-049 review round 2: a whole-buffer re-scan always sees a "\r" and
+        # a later "\n" together, so it merges them into one "\r\n" line
+        # terminator. An earlier incremental rewrite instead committed a
+        # trailing bare "\r" as complete the moment it saw it, then treated a
+        # "\n" arriving in a later read as its own, spurious empty line. This
+        # drives _split_complete_lines() directly with the terminator split
+        # exactly as the reviewer reproduced it, across every call boundary
+        # the fix must resolve without a phantom line.
+        complete, tail = process_module._split_complete_lines(
+            b"line1\r", eof=False
+        )
+        self.assertEqual(complete, [])
+        self.assertEqual(tail, b"line1\r")
+
+        more_complete, tail = process_module._split_complete_lines(
+            tail + b"\nline2\r\n", eof=False
+        )
+        self.assertEqual(more_complete, [b"line1", b"line2"])
+        self.assertEqual(tail, b"")
+
+    def test_split_complete_lines_resolves_trailing_cr_at_eof(self) -> None:
+        # A trailing bare "\r" with nothing after it, and no more input
+        # possible, is a complete one-line-terminated-by-\r line: the same
+        # content a whole-buffer re-scan would report immediately, since it
+        # never has more input to wait for either.
+        complete, tail = process_module._split_complete_lines(
+            b"line1\r", eof=True
+        )
+        self.assertEqual(complete, [b"line1"])
+        self.assertEqual(tail, b"")
+
+    def test_split_complete_lines_matches_whole_buffer_rescan(self) -> None:
+        # Equivalence test (T-049 review round 2): for a fixed final buffer
+        # mixing \n, \r and \r\n terminators, split arbitrarily into chunks
+        # that may or may not land inside a "\r\n" pair, the incremental
+        # scan's cumulative result once every chunk has arrived (eof=True on
+        # the last one) must match a single whole-buffer re-scan of the same
+        # bytes -- the property the old, pre-T-042 implementation had simply
+        # by re-deriving the line list from scratch on every call.
+        def whole_buffer_rescan(buffer: bytes) -> list[bytes]:
+            return [
+                line.rstrip(b"\r\n")
+                for line in buffer.splitlines(keepends=True)
+                if line.endswith((b"\n", b"\r"))
+            ]
+
+        terminators = (b"\n", b"\r", b"\r\n")
+        rng = random.Random(20260927)
+        for trial in range(200):
+            line_count = rng.randint(1, 12)
+            buffer = b"".join(
+                f"line{i}".encode() + rng.choice(terminators)
+                for i in range(line_count)
+            )
+            # Optionally leave a final unterminated tail, which never
+            # resolves under either algorithm.
+            unterminated = b""
+            if rng.random() < 0.5:
+                unterminated = b"tail"
+                buffer += unterminated
+
+            # Split the buffer at random byte offsets, including offsets
+            # that fall inside a "\r\n" pair.
+            cut_count = rng.randint(0, len(buffer))
+            cuts = sorted(rng.sample(range(len(buffer) + 1), cut_count))
+            offsets = sorted({0, len(buffer), *cuts})
+            chunks = [
+                buffer[start:end]
+                for start, end in zip(offsets, offsets[1:])
+                if start != end
+            ]
+
+            complete: list[bytes] = []
+            pending = b""
+            for index, chunk in enumerate(chunks):
+                pending += chunk
+                at_eof = index == len(chunks) - 1
+                newly_complete, pending = process_module._split_complete_lines(
+                    pending, eof=at_eof
+                )
+                complete.extend(newly_complete)
+
+            with self.subTest(trial=trial, buffer=buffer, offsets=offsets):
+                self.assertEqual(complete, whole_buffer_rescan(buffer))
+                self.assertEqual(pending, unterminated)
 
     def test_marked_process_rejects_target_marker_before_dispatch(self) -> None:
         child = """

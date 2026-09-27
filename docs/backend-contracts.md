@@ -114,6 +114,10 @@ includes writing that input (up to 1 MiB) and the harness's own wake latency
 in reading the marker off the target's stdout; it is not purely the target's
 own execution time. Integrated S-unit comparisons use their supervisor-measured
 whole-process wall envelope and label that different scope and clock explicitly.
+The supervisor also reports `effective_affinity` (read once the target is
+ready) and, when a CPU was requested, `effective_affinity_after_target` (read
+again after the marked interval) as diagnostics only; neither is consulted by
+the success/failure classification.
 
 Clock identities remain backend-specific: Silex uses `steady_clock`, Hecke
 uses Julia `time_ns`, PARI uses `getwalltime`, and Magma uses `Realtime`.

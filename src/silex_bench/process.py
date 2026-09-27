@@ -986,6 +986,32 @@ def _extend_limited(output: bytearray, chunk: bytes) -> bool:
     return False
 
 
+def _split_complete_lines(segment: bytes, *, eof: bool) -> tuple[list[bytes], bytes]:
+    """Split `segment` into confirmed-complete lines and a held-back tail.
+
+    A line counts as complete once it ends in `\\n` or `\\r` (matching the
+    whole-buffer `splitlines()` semantics this incremental scan replaces, T-042
+    review L3), except for one case: a segment that ends in a bare `\\r` (not
+    `\\r\\n`) is ambiguous when more input can still arrive, since the very
+    next byte read separately may be the `\\n` that completes a `\\r\\n`
+    terminator. That trailing bare `\\r` is therefore held back in the
+    returned tail, exactly like a terminator-less tail, until either `eof` is
+    set (no further byte can ever arrive, so it is resolved as its own bare
+    `\\r` line) or a caller re-invokes this with more bytes appended ahead of
+    it. Committing it immediately and scanning the next call's segment from
+    just past it, as an earlier incremental rewrite did, mistook a `\\n`
+    arriving in a later read for its own empty line (T-049 review round 2).
+    """
+    pieces = segment.splitlines(keepends=True)
+    incomplete = b""
+    if pieces:
+        last = pieces[-1]
+        if not last.endswith(b"\n") and not (last.endswith(b"\r") and eof):
+            incomplete = pieces.pop()
+    complete = [line.rstrip(b"\r\n") for line in pieces]
+    return complete, incomplete
+
+
 def _close_stdin(process: subprocess.Popen[Any]) -> None:
     if process.stdin is not None:
         process.stdin.close()
@@ -1415,6 +1441,11 @@ def run_marked_process(
     line_scan_offset = 0
     line_scan_tail_start = 0
     line_scan_complete: list[bytes] = []
+    # Set once a 0-byte read shows stdout itself is closed (T-049 review
+    # round 2), so complete_lines() knows a held-back trailing bare "\r" can
+    # never still be joined by a later "\n" and may be resolved as its own
+    # line. See _split_complete_lines().
+    stdout_closed = False
     process_start = time.perf_counter_ns()
     deadline = time.monotonic() + timeout
     process: subprocess.Popen[bytes] | None = None
@@ -1431,6 +1462,7 @@ def run_marked_process(
     open_streams: dict[int, bytearray] = {}
 
     def consume_readable(readable: list[int]) -> bool:
+        nonlocal stdout_closed
         consumed = False
         for descriptor in readable:
             output = open_streams[descriptor]
@@ -1443,6 +1475,8 @@ def run_marked_process(
                 continue
             consumed = True
             if not chunk:
+                if output is stdout_output:
+                    stdout_closed = True
                 del open_streams[descriptor]
                 continue
             if not _extend_limited(output, chunk):
@@ -1507,11 +1541,10 @@ def run_marked_process(
             line_scan_complete = []
         if line_scan_tail_start < len(stdout_output):
             segment = bytes(stdout_output[line_scan_tail_start:])
-            pieces = segment.splitlines(keepends=True)
-            incomplete = b""
-            if pieces and not pieces[-1].endswith((b"\n", b"\r")):
-                incomplete = pieces.pop()
-            line_scan_complete.extend(line.rstrip(b"\r\n") for line in pieces)
+            newly_complete, incomplete = _split_complete_lines(
+                segment, eof=stdout_closed
+            )
+            line_scan_complete.extend(newly_complete)
             line_scan_tail_start = len(stdout_output) - len(incomplete)
         # Callers only read this list (membership test or iteration); they
         # must not mutate it, since it is the live cache, not a fresh copy.
@@ -1679,6 +1712,12 @@ def run_marked_process(
             target_cpu_ms = (target_cpu_end - target_cpu_start) / 1_000_000
 
         if cpu is not None:
+            # Unlike the readiness-time effective_affinity read above (always
+            # attempted, and only its mismatch fails the sample when a CPU was
+            # requested), this diagnostic-only field is skipped entirely when
+            # there is no requested cpu to compare it against -- intentional,
+            # not an oversight to align with the earlier read (T-049 review
+            # round 2).
             try:
                 effective_affinity_after_target = sorted(
                     os.sched_getaffinity(target_pid)
