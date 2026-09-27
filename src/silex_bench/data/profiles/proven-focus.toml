@@ -3,6 +3,10 @@ id = "proven-focus"
 description = "Opt-in bounded proven comparison; select workloads and cases explicitly."
 include_tags = ["dev"]
 exclude_tags = []
+# 9 is higher than every other non-publication profile (dev=3, quick=1,
+# scale=5). This is intended for explicit case-id runs only (see
+# `description` above) and must not be pointed at a bulk `dev`-tag sweep
+# over the full corpus.
 repetitions = 9
 jit_repetitions = 1
 timeout_seconds = 60
@@ -12,6 +16,9 @@ publication = false
 minimum_repetitions = 1
 require_clean_sources = true
 
+# This degree bound is redundant with the `dev` tag rule (every `dev`-tagged
+# case already has degree <= 6, and no corpus row has degree < 2); kept here
+# as an explicit guard in case that tag rule ever changes.
 [metrics.degree]
 min = 2
 max = 6

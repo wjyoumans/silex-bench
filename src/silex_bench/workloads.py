@@ -463,14 +463,20 @@ def load_cases(corpora: Mapping[str, Path], workload_ids: tuple[str, ...]) -> li
             max_bytes=module.MAX_SUNIT_MANIFEST_BYTES,
         )
         rows = module.validate_manifest(payload)
-        for index, row in enumerate(rows):
+        for row in rows:
             coefficients = row["coefficients_low_to_high"]
             discriminant = _exact_discriminant(
                 row, f"S-unit corpus row {row.get('id', '<unknown>')}"
             )
             height = max(abs(value) for value in coefficients)
             tags = {"all", "sunit", "dev", "scale", "publication"}
-            if row["id"] in _QUICK_SUNIT_FIELDS or index == 0:
+            # `quick` membership is decided solely by this explicit allow-list,
+            # never by manifest row position, so reordering
+            # corpora/sunit_fields.json can never silently swap a slow/full-proof
+            # row into the bounded `quick` gate. See
+            # test_quick_sunit_tag_is_independent_of_manifest_row_order in
+            # test/test_sunit_corpus_loading.py.
+            if row["id"] in _QUICK_SUNIT_FIELDS:
                 tags.add("quick")
             cases.append(
                 Case(

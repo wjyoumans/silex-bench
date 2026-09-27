@@ -9,7 +9,7 @@ from pathlib import Path
 from silex_bench.resources import builtin_path
 from silex_bench.sunit_backend import MAX_SUNIT_MANIFEST_BYTES
 from silex_bench.util import MAX_JSON_NESTING_DEPTH
-from silex_bench.workloads import SUNIT, load_cases
+from silex_bench.workloads import SUNIT, _QUICK_SUNIT_FIELDS, load_cases
 
 
 class IntegratedSUnitCorpusLoadingTests(unittest.TestCase):
@@ -37,6 +37,32 @@ class IntegratedSUnitCorpusLoadingTests(unittest.TestCase):
 
         self.assertEqual(len(cases), len(self.manifest["fields"]))
         self.assertEqual({case.workload for case in cases}, {SUNIT})
+
+    def test_quick_sunit_tag_is_independent_of_manifest_row_order(self) -> None:
+        expected_quick_ids = set(_QUICK_SUNIT_FIELDS)
+        self.assertTrue(expected_quick_ids)
+
+        original_fields = self.manifest["fields"]
+        allow_listed_ids = {row["id"] for row in original_fields} & expected_quick_ids
+        self.assertEqual(
+            allow_listed_ids,
+            expected_quick_ids,
+            "the quick allow-list must name rows that exist in the manifest",
+        )
+
+        # Move the row that is at index 0 today (in the allow-list) to the
+        # end, and put a row that is NOT in the allow-list at index 0
+        # instead. The resulting `quick`-tagged set must still be exactly
+        # the allow-list, regardless of manifest row position, guarding
+        # against a positional fallback re-appearing.
+        reordered_fields = original_fields[1:] + original_fields[:1]
+        self.assertNotIn(reordered_fields[0]["id"], expected_quick_ids)
+        reordered_manifest = copy.deepcopy(self.manifest)
+        reordered_manifest["fields"] = reordered_fields
+
+        cases = self._load(self._write(reordered_manifest, "reordered.json"))
+        quick_ids = {case.id for case in cases if "quick" in case.tags}
+        self.assertEqual(quick_ids, expected_quick_ids)
 
     def test_original_schema_and_prime_index_convention_are_required(self) -> None:
         mutations = {
