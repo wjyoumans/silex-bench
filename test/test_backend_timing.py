@@ -2229,12 +2229,47 @@ class ExternalUnitGroupReadbackTests(unittest.TestCase):
                     self.assertIn("r1 + r2 - 1 = 1", payload["error"])
                     self.assertFalse(payload["proof"]["final_result_published"])
                     self.assertEqual(payload["result"]["unit_rank"], count)
+                    # A count mismatch never leaves a proven label, on any
+                    # engine, even though each engine's own stage flag
+                    # (PARI's certified=1, Hecke's GRH flags) reported success.
+                    self.assertFalse(payload["proof"]["proof_complete"])
+                    self.assertNotEqual(
+                        payload["proof"]["certification_status"], "proven"
+                    )
+                    self.assertNotEqual(
+                        payload["proof"]["unit_group_proof_status"], "proven"
+                    )
+                    self.assertNotEqual(
+                        payload["proof"]["regulator_proof_status"], "proven"
+                    )
                     errors = _class_unit_contract_errors(payload)
                     self.assertIn(
                         "backend.result.unit_rank must equal r1 + r2 - 1 from signature",
                         errors,
                     )
                     self.assertIn("failed check: rank_relation", errors)
+
+    def test_hecke_class_group_label_unaffected_by_unit_count_mismatch(self) -> None:
+        # Hecke's class-group proof does not depend on the unit count
+        # (Clgp/Proof.jl saturates the class-group relation lattice
+        # independently of the regulator index), so a unit-count mismatch
+        # drops only the unit-group and combined labels.
+        for count in (0, 2):
+            with self.subTest(count=count):
+                payload = _run_external_class_unit(
+                    "hecke", _hecke_class_unit_stdout(count)
+                )
+
+                self.assertFalse(payload["success"])
+                self.assertEqual(
+                    payload["proof"]["class_group_proof_status"], "proven"
+                )
+                self.assertEqual(
+                    payload["proof"]["unit_group_proof_status"], "unknown"
+                )
+                self.assertEqual(
+                    payload["proof"]["certification_status"], "failed"
+                )
 
     def test_missing_unit_count_is_incomplete(self) -> None:
         for engine in self.ENGINES:
@@ -2322,6 +2357,50 @@ class ExternalUnitGroupReadbackTests(unittest.TestCase):
         self.assertIn("!first_class_ctx.GRH && !repeat_class_ctx.GRH", final)
         self.assertIn("bench_unit_group_grh_free(first_O, first_unit_ctx)", final)
         self.assertIn("bench_unit_group_grh_free(repeat_O, repeat_unit_ctx)", final)
+
+
+class HeckeRealEngineRankZeroTests(unittest.TestCase):
+    """Runs the real Hecke adapter on a rank-zero field, when available.
+
+    Skipped when Hecke is not installed in the active Julia environment, the
+    same way other tests in this suite skip on a missing real tool (git,
+    matplotlib, taskset).
+    """
+
+    def test_rank_zero_unit_group_is_reported_proven(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            real_context = BackendContext(
+                workspace=Path(temporary),
+                bench_root=Path(temporary),
+                silex_source=Path(temporary),
+                silex_build_dir=Path(temporary),
+                tools={},
+                timeout_seconds=120.0,
+                cpu=None,
+                primary_clock="cpu",
+            )
+            backend = HeckeBackend()
+            probe = backend.probe(real_context)
+            if not probe.get("available"):
+                self.skipTest(f"Hecke is unavailable: {probe.get('error')}")
+
+            # x^2 + 47: imaginary quadratic, signature (0, 1), unit rank 0.
+            sample = SampleRequest(
+                field=field("imaginary_quadratic_47", 47),
+                operation="class_unit_proven",
+                sample_kind="cold_process",
+                sample_index=0,
+                warmup=None,
+                seed=7,
+            )
+            payload = backend.run(sample, real_context)
+
+        self.assertTrue(payload["success"], payload.get("error"))
+        self.assertEqual(payload["result"]["signature"], [0, 1])
+        self.assertEqual(payload["result"]["unit_rank"], 0)
+        self.assertEqual(payload["proof"]["unit_group_proof_status"], "proven")
+        self.assertEqual(payload["proof"]["class_group_proof_status"], "proven")
+        self.assertTrue(payload["proof"]["proof_complete"])
 
 
 if __name__ == "__main__":
