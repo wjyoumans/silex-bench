@@ -31,13 +31,13 @@ _READ_CHUNK_BYTES = 65536
 _SUPERVISOR_CONTROL_BYTES = 128
 _SUPERVISOR_HANDSHAKE_SECONDS = 5.0
 # Upper bound on what the harness reads from the post-handshake control
-# channel (T-042 review L8). The supervisor writes at most a few bounded
-# (128-byte) lines there.
+# channel. The supervisor writes at most a few bounded (128-byte) lines
+# there.
 _SUPERVISOR_CHANNEL_MAX_BYTES = 4096
 # Once every captured stream has reached EOF, the supervisor has already begun
 # exiting (it holds both pipes open until then), so only kernel exit
 # bookkeeping remains before it can be reaped. This bounds that final wait
-# when the observation deadline has already passed (T-042 review L4).
+# when the observation deadline has already passed.
 _SUPERVISOR_EXIT_AFTER_EOF_SECONDS = 1.0
 # On a stop request, the embedded supervisor now spends its bounded cleanup
 # budget at most once (see handle_stop_request/terminate_descendants in
@@ -49,7 +49,7 @@ _SUPERVISOR_EXIT_AFTER_EOF_SECONDS = 1.0
 # descendant tree, or under load) runs somewhat higher. This wait must clear
 # that worst case with margin so the harness does not give up, and SIGKILL
 # the supervisor's process group directly, before the supervisor's own
-# bounded cleanup has had a chance to finish (T-042 review L7).
+# bounded cleanup has had a chance to finish.
 _SUPERVISOR_STOP_WAIT_SECONDS = 1.5
 _SUPERVISOR_FDS_ENV = "SILEX_BENCH_INTERNAL_SUPERVISOR_FDS"
 _SUPERVISOR_EXECUTABLE_ENV = "SILEX_BENCH_INTERNAL_SUPERVISOR_EXECUTABLE"
@@ -101,8 +101,8 @@ AFFINITY_ENV = "SILEX_BENCH_INTERNAL_SUPERVISOR_AFFINITY"
 FALLBACK_WAIT_SECONDS = 0.2
 
 stop_requested = False
-# The control pipe stays open after the PID handshake (T-042 review L8), so
-# the supervisor can still report later errors and, just before it exits,
+# The control pipe stays open after the PID handshake, so the supervisor
+# can still report later errors and, just before it exits,
 # whether its exit status is the target's own or one it produced itself (124
 # after a stop request, 126 after an internal failure). Set by main().
 control_channel_fd = None
@@ -240,7 +240,7 @@ def kill_target_directly(pid, pidfd=None):
     signaled_by_pidfd = False
     if pidfd is not None:
         # signal.pidfd_send_signal targets the specific process the pidfd
-        # was opened for (T-045), not a pid number, so it cannot hit a
+        # was opened for, not a pid number, so it cannot hit a
         # process that has reused a recycled pid. Prefer it whenever a
         # pidfd is available (Linux 5.1+, Python 3.9+); os.kill(pid, ...)
         # below is the fallback for older kernels/interpreters.
@@ -267,7 +267,7 @@ def handle_stop_request(target, target_pidfd):
     # the target has been reaped, its pid is no longer held by this
     # process's own child and the kernel is free to recycle it; signalling
     # it (directly or via its process group) at that point could hit an
-    # unrelated same-UID process instead (T-047 review B1). Skip the direct
+    # unrelated same-UID process instead. Skip the direct
     # kill in that case; terminate_descendants() below still runs to finish
     # any orphan cleanup.
     if target.returncode is None:
@@ -277,7 +277,7 @@ def handle_stop_request(target, target_pidfd):
     except BaseException as exc:
         # terminate_descendants() already spent its full bounded budget once;
         # do not retry it here (the top-level handler below would otherwise
-        # spend that budget a second time; see T-042 review L7).
+        # spend that budget a second time).
         report_post_handshake(f"ERROR cleanup after stop request failed: {exc}")
         report_exit("supervisor", 126)
         os._exit(126)
@@ -355,7 +355,7 @@ def main():
     # warn_on_full_buffer=False, more than 64 KiB of queued signals (for
     # example, a target that forks many short-lived children) would make
     # Python write a warning to this process's stderr, which is the captured
-    # backend stderr (T-045 review, suggestion 5).
+    # backend stderr.
     signal.set_wakeup_fd(wakeup_write, warn_on_full_buffer=False)
 
     control_fd = int(os.environ[CONTROL_FD_ENV])
@@ -1029,8 +1029,8 @@ def _split_complete_lines(segment: bytes, *, eof: bool) -> tuple[list[bytes], by
     """Split `segment` into confirmed-complete lines and a held-back tail.
 
     A line counts as complete once it ends in `\\n` or `\\r` (matching the
-    whole-buffer `splitlines()` semantics this incremental scan replaces, T-042
-    review L3), except for one case: a segment that ends in a bare `\\r` (not
+    whole-buffer `splitlines()` semantics this incremental scan replaces),
+    except for one case: a segment that ends in a bare `\\r` (not
     `\\r\\n`) is ambiguous when more input can still arrive, since the very
     next byte read separately may be the `\\n` that completes a `\\r\\n`
     terminator. That trailing bare `\\r` is therefore held back in the
@@ -1039,7 +1039,7 @@ def _split_complete_lines(segment: bytes, *, eof: bool) -> tuple[list[bytes], by
     `\\r` line) or a caller re-invokes this with more bytes appended ahead of
     it. Committing it immediately and scanning the next call's segment from
     just past it, as an earlier incremental rewrite did, mistook a `\\n`
-    arriving in a later read for its own empty line (T-049 review round 2).
+    arriving in a later read for its own empty line.
     """
     pieces = segment.splitlines(keepends=True)
     incomplete = b""
@@ -1130,9 +1130,9 @@ def _bounded_communicate(
 
     if readers:
         # The deadline passed with output still open. Timeout classification
-        # uses what has already happened, not when this harness got to look
-        # (T-042 review L4): drain what is readable without waiting, and an
-        # EOF on every stream that was already there counts as an exit.
+        # uses what has already happened, not when this harness got to look:
+        # drain what is readable without waiting, and an EOF on every stream
+        # that was already there counts as an exit.
         while readers:
             readable, _, _ = select.select(list(readers), [], [], 0)
             if not readable:
@@ -1187,7 +1187,7 @@ class _ObservationDeadlineExpired(TimeoutError):
 
 
 class _SupervisorChannel:
-    """The supervisor's control pipe after the PID handshake (T-042 review L8).
+    """The supervisor's control pipe after the PID handshake.
 
     The supervisor reports post-handshake errors as ``ERROR <text>`` lines and,
     just before exiting, one ``EXIT <origin> <status>`` line naming whether its
@@ -1261,7 +1261,7 @@ def _with_failure_origin(
     ``"supervisor"`` when the supervisor produced it (124 after a stop
     request, 126 after an internal failure), and ``None`` for a successful
     run, a run without an exit status, or when the supervisor did not report
-    the status it exited with (T-042 review L8). Closes ``channel``.
+    the status it exited with. Closes ``channel``.
     """
     origin, status, supervisor_error = (None, None, None)
     if channel is not None:
@@ -1449,8 +1449,7 @@ def run_process(
                 env=env,
                 # DEVNULL, not None, when there is no caller-supplied input:
                 # None would let the target inherit this harness's own stdin,
-                # so it could consume a user's terminal or piped input
-                # (T-042 review L1).
+                # so it could consume a user's terminal or piped input.
                 stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
                 deadline=deadline,
             )
@@ -1458,7 +1457,7 @@ def run_process(
             for descriptor in pinned["descriptors"]:
                 os.close(descriptor)
         # A deadline that already passed still gets one observation of the
-        # supervised process before it is classified (T-042 review L4).
+        # supervised process before it is classified.
         remaining = max(deadline - time.monotonic(), 0.0)
         stdout, stderr, capture_error = _bounded_communicate(
             process,
@@ -1468,8 +1467,7 @@ def run_process(
         if capture_error is not None:
             # Capture the elapsed wall time at classification, before
             # _stop_process spends its own cleanup budget (up to about 2 s):
-            # otherwise a timeout row would report more than the deadline
-            # (T-042 review L2).
+            # otherwise a timeout row would report more than the deadline.
             elapsed_ms = (time.perf_counter_ns() - start) / 1_000_000
             returncode, stdout_tail, stderr_tail = _stop_process(process)
             _extend_limited(stdout, stdout_tail)
@@ -1595,8 +1593,8 @@ def run_marked_process(
 
     stdout_output = bytearray()
     stderr_output = bytearray()
-    # complete_lines() incremental scan state (T-042 review L3): rather than
-    # re-copying and re-splitting the whole segment since start_offset on
+    # complete_lines() incremental scan state: rather than re-copying and
+    # re-splitting the whole segment since start_offset on
     # every call (quadratic in the number of reads for a chatty target),
     # cache the lines already confirmed complete and only re-scan the
     # unterminated tail since the last call, appending any newly-arrived
@@ -1604,10 +1602,10 @@ def run_marked_process(
     line_scan_offset = 0
     line_scan_tail_start = 0
     line_scan_complete: list[bytes] = []
-    # Set once a 0-byte read shows stdout itself is closed (T-049 review
-    # round 2), so complete_lines() knows a held-back trailing bare "\r" can
-    # never still be joined by a later "\n" and may be resolved as its own
-    # line. See _split_complete_lines().
+    # Set once a 0-byte read shows stdout itself is closed, so
+    # complete_lines() knows a held-back trailing bare "\r" can never still
+    # be joined by a later "\n" and may be resolved as its own line. See
+    # _split_complete_lines().
     stdout_closed = False
     process_start = time.perf_counter_ns()
     deadline = time.monotonic() + timeout
@@ -1615,8 +1613,8 @@ def run_marked_process(
     channel: _SupervisorChannel | None = None
     target_pid: int | None = None
     effective_affinity: list[int] | None = None
-    # Re-read after the target marker (T-042 review L6): the readiness check
-    # below only shows the affinity a backend or runtime started with, and a
+    # Re-read after the target marker: the readiness check below only shows
+    # the affinity a backend or runtime started with, and a
     # backend or its runtime (OpenMP, Julia) could still change it during the
     # measured interval. When a CPU was requested, a mismatch here fails the
     # sample exactly as a readiness mismatch does.
@@ -1654,7 +1652,7 @@ def run_marked_process(
     def write_input(value: str) -> str:
         # Returns "ok", "timeout", or "broken_pipe": distinct outcomes, so a
         # closed pipe is reported for what it is rather than folded into the
-        # generic "timed out" reason (T-042 review L5).
+        # generic "timed out" reason.
         if process is None or process.stdin is None:
             return "timeout"
         descriptor = process.stdin.fileno()
@@ -1744,9 +1742,9 @@ def run_marked_process(
                     return "invalid"
                 # The exact nonce marker preceded by other bytes on its line:
                 # an unterminated line (such as a leftover prompt) ran into
-                # the marker. A protocol error, not a missing marker (T-042
-                # review L9). The nonce is unpredictable, so ordinary output
-                # cannot end with it by accident.
+                # the marker. A protocol error, not a missing marker. The
+                # nonce is unpredictable, so ordinary output cannot end with
+                # it by accident.
                 if line.endswith(expected_bytes):
                     return "unterminated"
             remaining = deadline - time.monotonic()
@@ -1755,8 +1753,8 @@ def run_marked_process(
 
     def observed_exit() -> bool:
         # Timeout classification uses what has already happened, not when
-        # this harness got to look (T-042 review L4). Drain whatever is
-        # readable without waiting: EOF on every stream shows the supervisor
+        # this harness got to look. Drain whatever is readable without
+        # waiting: EOF on every stream shows the supervisor
         # is already exiting, since it holds both pipes until it exits.
         if process is None:
             return False
@@ -1789,10 +1787,10 @@ def run_marked_process(
         # Classify at the failure boundary, before process-tree cleanup adds
         # elapsed time (both the timeout/success classification and the
         # reported wall time: cleanup can take up to about 2 s, and a
-        # timeout row must not report more than the deadline, T-042 review
-        # L2). Launch exceptions carry their classification separately. A
-        # run whose exit or EOF was already observable when the deadline was
-        # noticed exited rather than timed out (T-042 review L4).
+        # timeout row must not report more than the deadline. Launch
+        # exceptions carry their classification separately. A run whose exit
+        # or EOF was already observable when the deadline was noticed exited
+        # rather than timed out.
         if timed_out is None:
             timed_out = time.monotonic() >= deadline and not observed_exit()
         elapsed_ms = (time.perf_counter_ns() - process_start) / 1_000_000
@@ -1877,7 +1875,7 @@ def run_marked_process(
         # Scan from the start of the line in progress at dispatch, not from
         # the dispatch offset itself, so a leftover unterminated pre-dispatch
         # line (for example a prompt) is seen joined to whatever completes
-        # it whether it was read before or after dispatch (T-042 review L9).
+        # it whether it was read before or after dispatch.
         pre_dispatch = bytes(stdout_output)
         target_line_start = (
             max(pre_dispatch.rfind(b"\n"), pre_dispatch.rfind(b"\r")) + 1
@@ -1914,10 +1912,9 @@ def run_marked_process(
         if cpu is not None:
             # Unlike the readiness-time effective_affinity read above (always
             # attempted), this re-read is skipped entirely when there is no
-            # requested cpu to compare it against (T-049 review round 2).
-            # With a requested cpu it has the readiness check's severity: an
-            # unverifiable or changed affinity fails the sample (T-042 review
-            # L6).
+            # requested cpu to compare it against. With a requested cpu it
+            # has the readiness check's severity: an unverifiable or changed
+            # affinity fails the sample.
             try:
                 effective_affinity_after_target = sorted(
                     os.sched_getaffinity(target_pid)

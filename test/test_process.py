@@ -566,10 +566,11 @@ class ProcessTests(unittest.TestCase):
             self.assertIn("bad", failure["stdout"])
 
     def test_process_without_stdin_does_not_inherit_the_harness_stdin(self) -> None:
-        # T-042 review L1: stdin=None used to let the target read from this
-        # test process's own stdin. Reading it here would hang if that were
-        # still true (nothing writes to this test's stdin); with the fix
-        # (DEVNULL), the target's stdin.read() returns an immediate EOF.
+        # Guards against passing stdin=None when the caller supplies no
+        # input, which would let the target read from this test process's
+        # own stdin. Reading it here would hang if that were still true
+        # (nothing writes to this test's stdin); with the fix (DEVNULL), the
+        # target's stdin.read() returns an immediate EOF.
         with tempfile.TemporaryDirectory() as temporary:
             result = run_process(
                 [sys.executable, "-c", "import sys; print('data=' + repr(sys.stdin.read()))"],
@@ -755,8 +756,8 @@ class ProcessTests(unittest.TestCase):
             self.assertFalse(marker.exists())
 
     def test_marked_process_measures_only_target_segment(self) -> None:
-        # T-042 review T1: a bare ">= 0.0" assertion on target_wall_ms does
-        # not show that the ready and final phases are excluded from it. A
+        # A bare ">= 0.0" assertion on target_wall_ms would not show that the
+        # ready and final phases are excluded from it. A
         # sleep in each phase, well outside the target segment itself, lets
         # target_wall_ms and process_wall_ms be told apart: target_wall_ms
         # must stay far below either sleep, while process_wall_ms (the
@@ -794,9 +795,9 @@ print("answer=42", flush=True)
             self.assertEqual(parse_key_values(result["stdout"])["answer"], "42")
 
     def test_marked_process_handles_many_lines_across_both_phases(self) -> None:
-        # T-042 review L3: complete_lines() used to re-copy and re-split the
-        # whole captured segment since start_offset on every read, which is
-        # quadratic in the number of reads. This exercises its incremental
+        # complete_lines() used to re-copy and re-split the whole captured
+        # segment since start_offset on every read, which is quadratic in
+        # the number of reads. This exercises its incremental
         # rewrite with several thousand lines before and after the ready
         # marker (a phase-offset change partway through), including a mix of
         # \n, \r and \r\n terminators, and confirms every line still arrives
@@ -836,14 +837,13 @@ sys.stdin.readline()
         self.assertEqual(after_lines, [f"after{i}" for i in range(line_count)])
 
     def test_split_complete_lines_holds_back_cr_split_from_its_newline(self) -> None:
-        # T-049 review round 2: a whole-buffer re-scan always sees a "\r" and
-        # a later "\n" together, so it merges them into one "\r\n" line
-        # terminator. An earlier incremental rewrite instead committed a
-        # trailing bare "\r" as complete the moment it saw it, then treated a
-        # "\n" arriving in a later read as its own, spurious empty line. This
-        # drives _split_complete_lines() directly with the terminator split
-        # exactly as the reviewer reproduced it, across every call boundary
-        # the fix must resolve without a phantom line.
+        # A whole-buffer re-scan always sees a "\r" and a later "\n"
+        # together, so it merges them into one "\r\n" line terminator. An
+        # earlier incremental rewrite instead committed a trailing bare "\r"
+        # as complete the moment it saw it, then treated a "\n" arriving in a
+        # later read as its own, spurious empty line. This drives
+        # _split_complete_lines() directly with that terminator split across
+        # every call boundary the fix must resolve without a phantom line.
         complete, tail = process_module._split_complete_lines(
             b"line1\r", eof=False
         )
@@ -868,13 +868,13 @@ sys.stdin.readline()
         self.assertEqual(tail, b"")
 
     def test_split_complete_lines_matches_whole_buffer_rescan(self) -> None:
-        # Equivalence test (T-049 review round 2): for a fixed final buffer
-        # mixing \n, \r and \r\n terminators, split arbitrarily into chunks
-        # that may or may not land inside a "\r\n" pair, the incremental
-        # scan's cumulative result once every chunk has arrived (eof=True on
-        # the last one) must match a single whole-buffer re-scan of the same
-        # bytes -- the property the old, pre-T-042 implementation had simply
-        # by re-deriving the line list from scratch on every call.
+        # Equivalence test: for a fixed final buffer mixing \n, \r and \r\n
+        # terminators, split arbitrarily into chunks that may or may not land
+        # inside a "\r\n" pair, the incremental scan's cumulative result once
+        # every chunk has arrived (eof=True on the last one) must match a
+        # single whole-buffer re-scan of the same bytes -- the property the
+        # old, whole-buffer-rescan implementation had simply by re-deriving
+        # the line list from scratch on every call.
         def whole_buffer_rescan(buffer: bytes) -> list[bytes]:
             return [
                 line.rstrip(b"\r\n")
@@ -1235,8 +1235,8 @@ sys.stdin.readline()
             # process_wall_ms is captured at classification, before
             # _stop_process's cleanup budget (up to about 2 s) runs, so it
             # should sit close to the 0.6 s deadline rather than include
-            # cleanup (T-042 review L2, T5: the wider 800 ms bound here was
-            # a workaround for that cleanup time and was timing-sensitive
+            # cleanup (a wider 800 ms bound here was previously used as a
+            # workaround for that cleanup time and was timing-sensitive
             # under load).
             self.assertGreaterEqual(result["process_wall_ms"], 550.0)
             self.assertLess(result["process_wall_ms"], 700.0)
@@ -1301,8 +1301,8 @@ sys.stdin.readline()
         self.assertRegex(result["launcher_executable_sha256"], r"^[0-9a-f]{64}$")
 
     def test_marked_process_re_checks_affinity_after_target_marker(self) -> None:
-        # T-042 review L6: the readiness check alone only shows the affinity
-        # a backend started with. Here the target changes its own affinity
+        # The readiness check alone only shows the affinity a backend
+        # started with. Here the target changes its own affinity
         # during the measured interval; the post-target re-check must catch
         # that drift and, like the readiness check, fail the sample (it is a
         # protocol failure, not a timeout).
@@ -1346,8 +1346,8 @@ sys.stdin.readline()
         self.assertNotIn("target_wall_ms", result)
 
     def test_marked_process_keeps_an_unchanged_affinity_after_target(self) -> None:
-        # Counterpart to the L6 failure above: a target that stays on its
-        # requested CPU passes the post-target re-check.
+        # Counterpart to the affinity-drift failure above: a target that
+        # stays on its requested CPU passes the post-target re-check.
         if not hasattr(os, "sched_getaffinity"):
             self.skipTest("sched_getaffinity is unavailable")
         if shutil.which("taskset") is None:
@@ -1476,9 +1476,9 @@ time.sleep(2)
         self.assertLess(elapsed, 0.5)
 
     def test_marked_process_records_early_exit_before_a_marker(self) -> None:
-        # T-042 review T3: nothing covered a marked target that exits, with
-        # its own exit code, before ever reaching a marker -- as distinct
-        # from a deadline timeout. The child reads the ready input (so the
+        # Covers a marked target that exits, with its own exit code, before
+        # ever reaching a marker -- as distinct from a deadline timeout. The
+        # child reads the ready input (so the
         # write itself succeeds) and then exits without printing READY.
         with tempfile.TemporaryDirectory() as temporary:
             result = run_marked_process(
@@ -1498,10 +1498,10 @@ time.sleep(2)
         self.assertEqual(result["error"], "marked process did not reach ready marker")
 
     def test_marked_process_reports_broken_pipe_distinctly_from_timeout(self) -> None:
-        # T-042 review L5: a closed input pipe used to be reported with the
-        # same "timed out writing ... input" text as an actual deadline
-        # expiry, even though timeout was already False. The message must
-        # name the real cause instead.
+        # A closed input pipe used to be reported with the same "timed out
+        # writing ... input" text as an actual deadline expiry, even though
+        # timeout was already False. The message must name the real cause
+        # instead.
         child = """
 import sys
 import time
@@ -1532,7 +1532,7 @@ time.sleep(2)
 
     def _lagging_harness(self) -> tuple[Any, Any, list[float]]:
         """Stand-ins for the process module's ``os`` and ``time`` that simulate
-        harness scheduling lag deterministically (T-042 review L4).
+        harness scheduling lag deterministically.
 
         From the first EOF the harness reads on a pipe (a captured stream,
         so the target has exited by then), its monotonic clock reads 1000 s
@@ -1564,9 +1564,9 @@ time.sleep(2)
     def test_bounded_communicate_classifies_an_already_exited_process_as_exited(
         self,
     ) -> None:
-        # T-042 review L4: once the deadline has passed, an exit (and EOF)
-        # that had already happened must be classified as an exit, not a
-        # timeout. The process has exited (unreaped) before the call, and a
+        # Once the deadline has passed, an exit (and EOF) that had already
+        # happened must be classified as an exit, not a timeout. The
+        # process has exited (unreaped) before the call, and a
         # zero timeout makes the harness notice only after the deadline.
         process = subprocess.Popen(
             [sys.executable, "-c", "print('done'); raise SystemExit(3)"],
@@ -1604,7 +1604,8 @@ time.sleep(2)
         self.assertEqual(error, "process timed out")
 
     def test_process_exit_noticed_after_the_deadline_is_not_a_timeout(self) -> None:
-        # T-042 review L4, through run_process with the real supervisor.
+        # Same "exit noticed after the deadline" case as above, but through
+        # run_process with the real supervisor.
         lagging_os, lagging_time, lag = self._lagging_harness()
         with tempfile.TemporaryDirectory() as temporary, mock.patch.object(
             process_module, "os", lagging_os
@@ -1622,8 +1623,8 @@ time.sleep(2)
         self.assertEqual(result["failure_origin"], "target")
 
     def test_marked_exit_noticed_after_the_deadline_is_not_a_timeout(self) -> None:
-        # T-042 review L4: a marked target that exits early, noticed only
-        # after the deadline, is an early exit, not a timeout.
+        # A marked target that exits early, noticed only after the deadline,
+        # is an early exit, not a timeout.
         lagging_os, lagging_time, lag = self._lagging_harness()
         with tempfile.TemporaryDirectory() as temporary, mock.patch.object(
             process_module, "os", lagging_os
@@ -1648,8 +1649,8 @@ time.sleep(2)
     def test_marked_process_rejects_a_leftover_partial_line_read_before_dispatch(
         self,
     ) -> None:
-        # T-042 review L9: a prompt-like unterminated line left before
-        # dispatch runs into the target marker. One write puts the ready
+        # A prompt-like unterminated line left before dispatch runs into the
+        # target marker. One write puts the ready
         # marker and the partial line in the pipe together, so the harness
         # reads the partial line before dispatch.
         child = """
@@ -1683,9 +1684,9 @@ sys.stdin.readline()
     def test_marked_process_rejects_a_leftover_partial_line_read_after_dispatch(
         self,
     ) -> None:
-        # T-042 review L9: the same partial line, arriving in the same write
-        # as the marker (so the harness reads it after dispatch), is the
-        # same protocol error, not a timeout.
+        # The same partial line, arriving in the same write as the marker
+        # (so the harness reads it after dispatch), is the same protocol
+        # error, not a timeout.
         child = """
 import os
 import sys
@@ -1743,8 +1744,8 @@ sys.stdin.readline()
     def test_failure_origin_distinguishes_supervisor_and_target_exit_124(
         self,
     ) -> None:
-        # T-042 review L8: exit status 124 from a supervisor stopped after a
-        # timeout, versus a target that itself exits with 124.
+        # Distinguishes exit status 124 from a supervisor stopped after a
+        # timeout from a target that itself exits with 124.
         with tempfile.TemporaryDirectory() as temporary:
             stopped = run_process(
                 [sys.executable, "-c", "import time; time.sleep(30)"],
@@ -1778,8 +1779,8 @@ sys.stdin.readline()
     def test_post_handshake_supervisor_error_is_reported_with_its_origin(
         self,
     ) -> None:
-        # T-042 review L8: a supervisor that fails after the PID handshake
-        # reports on the still-open control channel; the harness records the
+        # A supervisor that fails after the PID handshake reports on the
+        # still-open control channel; the harness records the
         # error and the supervisor origin of exit status 126. A stand-in
         # supervisor writes the whole exchange in one write, so the harness
         # also has to keep the bytes that follow the PID line.
@@ -1960,9 +1961,9 @@ sys.stdin.readline()
         self.assertEqual(supervisor_cpus, expected_supervisor_cpus)
 
     def test_supervisor_stays_asleep_during_the_run(self) -> None:
-        # T-045 review, suggestion 4: the H1 fix replaced a 5 ms poll (about
-        # 200 wakeups/s) with a blocking wait, but no regression test covered
-        # the blocking wait itself. Read the supervisor's own
+        # The supervisor once polled every 5 ms (about 200 wakeups/s) instead
+        # of blocking; this guards against that regression. Read the
+        # supervisor's own
         # voluntary_ctxt_switches count from /proc twice, about 0.3 s apart,
         # while it is blocked in that wait for the whole window (no target
         # marker write or exit happens in between). A tolerant bound (a
@@ -2055,7 +2056,7 @@ class SupervisorHousekeepingCpuTests(unittest.TestCase):
 
 
 class SupervisorSourceDescendantTests(unittest.TestCase):
-    """Mocked coverage of the embedded supervisor's own functions (T-042 M2, L7).
+    """Mocked coverage of the embedded supervisor's own functions.
 
     These exec() the supervisor source (see _load_supervisor_namespace) so
     the fail-closed startup check, the multi-thread descendant walk, and the
@@ -2065,10 +2066,10 @@ class SupervisorSourceDescendantTests(unittest.TestCase):
 
     def setUp(self) -> None:
         # Snapshot this test process's own signal disposition so tearDown
-        # can prove no test in this class leaked a change into it (T-047
-        # review B2): a test that calls the embedded supervisor's real
-        # main() must mock signal installation rather than let it touch
-        # this process's handlers or wakeup fd.
+        # can prove no test in this class leaked a change into it: a test
+        # that calls the embedded supervisor's real main() must mock signal
+        # installation rather than let it touch this process's handlers or
+        # wakeup fd.
         self._signal_snapshot = {
             signum: signal.getsignal(signum)
             for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGCHLD)
@@ -2243,9 +2244,9 @@ class SupervisorSourceDescendantTests(unittest.TestCase):
         # The common case: the target has not called setsid, so its pgid is
         # the supervisor's own. killpg-ing that group would kill the
         # supervisor itself before terminate_descendants() can walk /proc for
-        # descendants that escaped into a different session (see the
-        # regression this guards against: T-047 review, real-process setsid
-        # and double-fork descendant tests).
+        # descendants that escaped into a different session, as the
+        # escaped-process-group and reparented-double-fork-descendant tests
+        # above cover.
         namespace = _load_supervisor_namespace()
         with mock.patch.object(
             os, "getpgid", return_value=777
@@ -2286,8 +2287,8 @@ class SupervisorSourceDescendantTests(unittest.TestCase):
     def test_supervisor_reports_its_exit_origin_on_the_control_channel(
         self,
     ) -> None:
-        # T-042 review L8: after the PID handshake the supervisor reports
-        # whether its exit status is the target's own or its own.
+        # After the PID handshake the supervisor reports whether its exit
+        # status is the target's own or its own.
         cases = {
             "stop": ("EXIT supervisor 124\n", 124),
             "stop_cleanup_failure": (
@@ -2350,14 +2351,14 @@ class SupervisorSourceDescendantTests(unittest.TestCase):
                 namespace["handle_stop_request"](target, 99)
 
         # The stop path must not retry the (already exhausted) cleanup budget
-        # a second time; see T-042 review L7.
+        # a second time.
         self.assertEqual(len(terminate_calls), 1)
         exit_mock.assert_called_once_with(126)
 
     def test_stop_after_reap_signals_neither_the_old_pid_nor_its_group(self) -> None:
-        # Regression for T-047 review B1: once Popen.poll() has reaped the
-        # target (target.returncode is set), the kernel is free to recycle
-        # its pid for an unrelated process. A stop request that arrives
+        # Once Popen.poll() has reaped the target (target.returncode is
+        # set), the kernel is free to recycle its pid for an unrelated
+        # process. A stop request that arrives
         # after that point must send no signal at all to that pid, its
         # pgid, or via its pidfd -- only terminate_descendants() (the
         # /proc-walk orphan cleanup) may still run.
@@ -2384,10 +2385,10 @@ class SupervisorSourceDescendantTests(unittest.TestCase):
     def test_kill_target_directly_prefers_pidfd_send_signal_when_available(
         self,
     ) -> None:
-        # When a pidfd is available (T-045), it must be preferred over
+        # When a pidfd is available, it must be preferred over
         # os.kill(pid, ...): it targets the exact process the pidfd was
         # opened for, so it cannot hit a process that has since reused a
-        # recycled pid (T-047 review B1).
+        # recycled pid.
         namespace = _load_supervisor_namespace()
         with mock.patch.object(
             os, "getpgid", return_value=777
