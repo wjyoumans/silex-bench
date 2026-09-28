@@ -639,6 +639,11 @@ class PariBackend(BackendAdapter):
             if request.operation == "class_unit_proven"
             else None
         )
+        # bnfcertify proves the whole bnf structure at once, so a returned
+        # unit count that disagrees with r1 + r2 - 1 means the certified bnf
+        # is not the one the adapter read back; the proof labels drop to
+        # unknown together with certification, matching the other adapters.
+        certified_effective = certified and unit_error is None
         result_complete = (
             process_success
             and _complete(request, result, certified)
@@ -654,17 +659,17 @@ class PariBackend(BackendAdapter):
         success = result_complete and thread_count["matches_requested"]
         if request.operation == "class_unit_proven":
             proof = {
-                "certification_status": "proven" if certified else "failed",
+                "certification_status": "proven" if certified_effective else "failed",
                 "class_group_proof_status": (
-                    "proven" if certified else "unknown"
+                    "proven" if certified_effective else "unknown"
                 ),
                 "unit_group_proof_status": (
-                    "proven" if certified else "unknown"
+                    "proven" if certified_effective else "unknown"
                 ),
                 "regulator_proof_status": (
-                    "proven" if certified else "unknown"
+                    "proven" if certified_effective else "unknown"
                 ),
-                "proof_complete": certified,
+                "proof_complete": certified_effective,
                 "final_result_published": result_complete,
             }
         else:

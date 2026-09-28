@@ -784,7 +784,6 @@ readline(stdin)
         result = _result(request, values)
         class_group_proven = parse_bool(values, "class_group_grh_free") is True
         unit_group_proven = parse_bool(values, "unit_group_grh_free") is True
-        proven = class_group_proven and unit_group_proven
         paired = request.jit_repetitions == 1
         results_agree = (
             parse_bool(values, "jit_results_agree") is True
@@ -796,6 +795,13 @@ readline(stdin)
             if request.operation == "class_unit_proven"
             else None
         )
+        # A returned unit count that disagrees with r1 + r2 - 1 means the
+        # unit group Hecke returned is not the one its GRH flag describes, so
+        # the unit-group and combined proof labels drop to unknown even
+        # though the class-group proof (which does not depend on the unit
+        # count) is unaffected.
+        unit_group_proven_effective = unit_group_proven and unit_error is None
+        proven = class_group_proven and unit_group_proven_effective
         success = (
             process_state_is_valid(process)
             and process["success"]
@@ -810,7 +816,7 @@ readline(stdin)
                     "proven" if class_group_proven else "unknown"
                 ),
                 "unit_group_proof_status": (
-                    "proven" if unit_group_proven else "unknown"
+                    "proven" if unit_group_proven_effective else "unknown"
                 ),
                 "regulator_proof_status": (
                     "proven" if proven else "unknown"
