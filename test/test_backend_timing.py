@@ -2232,15 +2232,25 @@ class ExternalUnitGroupReadbackTests(unittest.TestCase):
                     # A count mismatch never leaves a proven label, on any
                     # engine, even though each engine's own stage flag
                     # (PARI's certified=1, Hecke's GRH flags) reported success.
+                    # This holds for counts both below (0) and above (2) the
+                    # expected r1 + r2 - 1 = 1: either way the returned unit
+                    # group is not the one the engine's proof used.
                     self.assertFalse(payload["proof"]["proof_complete"])
                     self.assertNotEqual(
-                        payload["proof"]["certification_status"], "proven"
+                        payload["proof"]["class_group_proof_status"], "proven"
                     )
                     self.assertNotEqual(
                         payload["proof"]["unit_group_proof_status"], "proven"
                     )
                     self.assertNotEqual(
                         payload["proof"]["regulator_proof_status"], "proven"
+                    )
+                    # certification_status specifically reports unknown, not
+                    # failed: the mismatch is a readback disagreement, not
+                    # evidence that the engine's own certification step
+                    # failed (see decisions.md, 2026-09-27).
+                    self.assertEqual(
+                        payload["proof"]["certification_status"], "unknown"
                     )
                     errors = _class_unit_contract_errors(payload)
                     self.assertIn(
@@ -2255,9 +2265,14 @@ class ExternalUnitGroupReadbackTests(unittest.TestCase):
         # full rank (NfOrd/Clgp.jl): saturate!/simplify (Clgp/Saturate.jl)
         # fold U.units into the relation lattice being saturated. A unit
         # count below r1 + r2 - 1 means that full-rank assertion did not
-        # hold for the UnitGrpCtx the class proof used, so a unit-count
-        # mismatch drops the class-group label too, along with the
-        # unit-group and combined labels.
+        # hold for the UnitGrpCtx the class proof used; a count above
+        # r1 + r2 - 1 means the list the adapter read is longer than the
+        # group the proof asserted and saturated against, so it is equally
+        # not that group. Either way a unit-count mismatch drops the
+        # class-group label too, along with the unit-group and combined
+        # labels. certification_status itself reads unknown, not failed:
+        # Hecke's own GRH flags may still both report success, so the
+        # mismatch is a readback disagreement, not a Hecke proof failure.
         for count in (0, 2):
             with self.subTest(count=count):
                 payload = _run_external_class_unit(
@@ -2272,7 +2287,7 @@ class ExternalUnitGroupReadbackTests(unittest.TestCase):
                     payload["proof"]["unit_group_proof_status"], "unknown"
                 )
                 self.assertEqual(
-                    payload["proof"]["certification_status"], "failed"
+                    payload["proof"]["certification_status"], "unknown"
                 )
 
     def test_missing_unit_count_is_incomplete(self) -> None:

@@ -55,8 +55,11 @@ decimal strings.
   with that unit group (`saturate!`/`simplify` in `Clgp/Saturate.jl` fold
   every `U.units` entry into the lattice being saturated). A returned count
   below `r1 + r2 - 1` means the `UnitGrpCtx` the class proof used was not the
-  full-rank group the assertion required, so a count mismatch drops every
-  label to unknown, class-group included. A JIT pair requires the flags and
+  full-rank group the assertion required; a count above `r1 + r2 - 1` means
+  the list the adapter read is longer than the group the proof asserted and
+  saturated against, so it is equally not that group. Either way, a count
+  mismatch drops every label to unknown, class-group included. A JIT pair
+  requires the flags and
   unit counts of both calls.
   The adapter relays Hecke's own proof flags as reported and adds no
   additional guard on them: `_unit_group_proof` (`Clgp/Proof.jl`) computes a
@@ -99,7 +102,11 @@ bnf structure together, so a mismatch clears certification and all three
 proof-status fields; Hecke's class-group proof consumes the same
 `UnitGrpCtx` its unit-group proof does, so a mismatch clears every label,
 class-group included; Magma has no independent per-stage flag, so a
-mismatch clears every label.
+mismatch clears every label. All three adapters also agree that
+`certification_status` on a mismatch reads `unknown`, not `failed`: the
+mismatch is a readback disagreement between the adapter and the engine's
+returned unit group, not evidence that the engine's own certification step
+failed, so none of the three claims a failure it cannot show.
 
 Validation requires a positive class order, normalized invariant factors whose
 product is the order, a signature of the field degree, the Dirichlet unit-rank

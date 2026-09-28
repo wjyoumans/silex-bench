@@ -800,9 +800,14 @@ readline(stdin)
         # unit group Hecke's own class-group proof asserted and saturated
         # against (_class_unit_group asserts U.full_rank before
         # _class_group_proof runs; saturate!/simplify fold U.units into the
-        # relation lattice they saturate). So a mismatch also invalidates the
-        # class-group label: it was proven using that same (possibly
-        # not-full-rank) unit group.
+        # relation lattice they saturate). A count below r1 + r2 - 1 means
+        # that assertion did not hold; a count above r1 + r2 - 1 means the
+        # list the adapter read is longer than the group the proof asserted
+        # and saturated against, so it is equally not that group. Either way
+        # the returned count is not the full-rank group the class-group
+        # proof used, so a mismatch also invalidates the class-group label:
+        # it was proven using that same (possibly not-full-rank, or not the
+        # same) unit group.
         class_group_proven_effective = class_group_proven and unit_error is None
         unit_group_proven_effective = unit_group_proven and unit_error is None
         proven = class_group_proven_effective and unit_group_proven_effective
@@ -814,8 +819,20 @@ readline(stdin)
             and unit_error is None
         )
         if request.operation == "class_unit_proven":
+            if unit_error is not None:
+                # A unit-count mismatch is a readback disagreement, not a
+                # Hecke proof failure: `class_group_proven`/`unit_group_proven`
+                # above (Hecke's own GRH flags) may still both be true. The
+                # adapter cannot tell which unit group the class proof
+                # actually used, so it reports unknown rather than claiming
+                # the certification failed, matching Magma.
+                certification_status = "unknown"
+            elif proven:
+                certification_status = "proven"
+            else:
+                certification_status = "failed"
             proof = {
-                "certification_status": "proven" if proven else "failed",
+                "certification_status": certification_status,
                 "class_group_proof_status": (
                     "proven" if class_group_proven_effective else "unknown"
                 ),
