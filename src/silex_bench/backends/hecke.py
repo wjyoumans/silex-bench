@@ -819,7 +819,12 @@ readline(stdin)
             and unit_error is None
         )
         if request.operation == "class_unit_proven":
-            if unit_error is not None:
+            # `proven` already folds in `unit_error is None` via
+            # `class_group_proven_effective`/`unit_group_proven_effective`, so
+            # reuse it here instead of re-deriving that condition.
+            if proven:
+                certification_status = "proven"
+            elif unit_error is not None:
                 # A unit-count mismatch is a readback disagreement, not a
                 # Hecke proof failure: `class_group_proven`/`unit_group_proven`
                 # above (Hecke's own GRH flags) may still both be true. The
@@ -827,8 +832,6 @@ readline(stdin)
                 # actually used, so it reports unknown rather than claiming
                 # the certification failed, matching Magma.
                 certification_status = "unknown"
-            elif proven:
-                certification_status = "proven"
             else:
                 certification_status = "failed"
             proof = {

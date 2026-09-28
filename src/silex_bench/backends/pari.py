@@ -658,14 +658,16 @@ class PariBackend(BackendAdapter):
         }
         success = result_complete and thread_count["matches_requested"]
         if request.operation == "class_unit_proven":
-            if unit_error is not None:
+            # `certified_effective` already folds in `unit_error is None`, so
+            # reuse it here instead of re-deriving that condition.
+            if certified_effective:
+                certification_status = "proven"
+            elif unit_error is not None:
                 # A unit-count mismatch is a readback disagreement, not a
                 # `bnfcertify` failure: `certified` may still be 1. The
                 # adapter cannot tell which bnf was certified, so it reports
                 # unknown rather than claiming the certification failed.
                 certification_status = "unknown"
-            elif certified:
-                certification_status = "proven"
             else:
                 certification_status = "failed"
             proof = {
