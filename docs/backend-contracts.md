@@ -46,10 +46,18 @@ decimal strings.
   `Clgp/Proof.jl`. The one exception is unit rank zero, where
   `_class_unit_group` skips the unit proof because the unit group is only
   torsion, so rank zero also counts as proven. Certification, the regulator,
-  and `proof_complete` require both statuses and a matching unit count; a
-  count mismatch drops the unit-group and combined labels to unknown even
-  though the class-group label, which does not depend on the unit count, is
-  unaffected. A JIT pair requires the flags and unit counts of both calls.
+  the class-group status, and `proof_complete` all require both `GRH` flags
+  and a matching unit count. This is not merely a conjunction the adapter
+  imposes: Hecke's class-group proof consumes the same `UnitGrpCtx` the unit
+  count is read from. `_class_unit_group` asserts that `UnitGrpCtx` is full
+  rank before calling `_class_group_proof` (`NfOrd/Clgp.jl`), and
+  `_class_group_proof` saturates the class-group relation lattice together
+  with that unit group (`saturate!`/`simplify` in `Clgp/Saturate.jl` fold
+  every `U.units` entry into the lattice being saturated). A returned count
+  below `r1 + r2 - 1` means the `UnitGrpCtx` the class proof used was not the
+  full-rank group the assertion required, so a count mismatch drops every
+  label to unknown, class-group included. A JIT pair requires the flags and
+  unit counts of both calls.
   The adapter relays Hecke's own proof flags as reported and adds no
   additional guard on them: `_unit_group_proof` (`Clgp/Proof.jl`) computes a
   regulator-index bound from `Nemo.unique_integer` and does not check that
@@ -65,11 +73,11 @@ decimal strings.
 - **Magma** calls `ClassGroup(O : Proof := "Full")` and
   `UnitGroup(O : GRH := false)`, matching the installed handbook contracts.
   The unit count is the number of infinite-order generators of the returned
-  abstract unit group; each generator is also mapped to its unit in the
-  order, but that mapped value is only used elsewhere in the observation and
-  does not affect the count. Magma is closed source, so whether that
-  abstract group's free rank could ever differ from the field signature is
-  not established; the count is reported as what it is, a structural
+  abstract unit group; each generator is also evaluated under the unit map,
+  but the mapped values are discarded and do not affect the count. Magma is
+  closed source, so whether that abstract group's free rank could ever
+  differ from the field signature is not established; the count is reported
+  as what it is, a structural
   property of the returned group, and not claimed as independent evidence.
   The V2.28 handbook documents no intrinsic that reports a computed group's
   proof state. Magma's proof labels therefore follow the call contract: with
@@ -88,10 +96,10 @@ case: a unit-count mismatch never leaves a result labeled proven, even for
 the fields (PARI's `certified`, Hecke's class-group `GRH` flag) that a
 successful earlier stage already set. PARI's `bnfcertify` proves the whole
 bnf structure together, so a mismatch clears certification and all three
-proof-status fields; Hecke's class-group status is independent of the unit
-count and is unaffected, but the unit-group, regulator, and combined labels
-drop to unknown; Magma has no independent per-stage flag, so a mismatch
-clears every label.
+proof-status fields; Hecke's class-group proof consumes the same
+`UnitGrpCtx` its unit-group proof does, so a mismatch clears every label,
+class-group included; Magma has no independent per-stage flag, so a
+mismatch clears every label.
 
 Validation requires a positive class order, normalized invariant factors whose
 product is the order, a signature of the field degree, the Dirichlet unit-rank

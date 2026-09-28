@@ -796,12 +796,16 @@ readline(stdin)
             else None
         )
         # A returned unit count that disagrees with r1 + r2 - 1 means the
-        # unit group Hecke returned is not the one its GRH flag describes, so
-        # the unit-group and combined proof labels drop to unknown even
-        # though the class-group proof (which does not depend on the unit
-        # count) is unaffected.
+        # `UnitGrpCtx` the adapter read the count from is not the full-rank
+        # unit group Hecke's own class-group proof asserted and saturated
+        # against (_class_unit_group asserts U.full_rank before
+        # _class_group_proof runs; saturate!/simplify fold U.units into the
+        # relation lattice they saturate). So a mismatch also invalidates the
+        # class-group label: it was proven using that same (possibly
+        # not-full-rank) unit group.
+        class_group_proven_effective = class_group_proven and unit_error is None
         unit_group_proven_effective = unit_group_proven and unit_error is None
-        proven = class_group_proven and unit_group_proven_effective
+        proven = class_group_proven_effective and unit_group_proven_effective
         success = (
             process_state_is_valid(process)
             and process["success"]
@@ -813,7 +817,7 @@ readline(stdin)
             proof = {
                 "certification_status": "proven" if proven else "failed",
                 "class_group_proof_status": (
-                    "proven" if class_group_proven else "unknown"
+                    "proven" if class_group_proven_effective else "unknown"
                 ),
                 "unit_group_proof_status": (
                     "proven" if unit_group_proven_effective else "unknown"

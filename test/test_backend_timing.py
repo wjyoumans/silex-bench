@@ -2249,11 +2249,15 @@ class ExternalUnitGroupReadbackTests(unittest.TestCase):
                     )
                     self.assertIn("failed check: rank_relation", errors)
 
-    def test_hecke_class_group_label_unaffected_by_unit_count_mismatch(self) -> None:
-        # Hecke's class-group proof does not depend on the unit count
-        # (Clgp/Proof.jl saturates the class-group relation lattice
-        # independently of the regulator index), so a unit-count mismatch
-        # drops only the unit-group and combined labels.
+    def test_hecke_class_group_label_cleared_by_unit_count_mismatch(self) -> None:
+        # Hecke's class-group proof (Clgp/Proof.jl's _class_group_proof)
+        # saturates the same UnitGrpCtx that _class_unit_group asserted was
+        # full rank (NfOrd/Clgp.jl): saturate!/simplify (Clgp/Saturate.jl)
+        # fold U.units into the relation lattice being saturated. A unit
+        # count below r1 + r2 - 1 means that full-rank assertion did not
+        # hold for the UnitGrpCtx the class proof used, so a unit-count
+        # mismatch drops the class-group label too, along with the
+        # unit-group and combined labels.
         for count in (0, 2):
             with self.subTest(count=count):
                 payload = _run_external_class_unit(
@@ -2262,7 +2266,7 @@ class ExternalUnitGroupReadbackTests(unittest.TestCase):
 
                 self.assertFalse(payload["success"])
                 self.assertEqual(
-                    payload["proof"]["class_group_proof_status"], "proven"
+                    payload["proof"]["class_group_proof_status"], "unknown"
                 )
                 self.assertEqual(
                     payload["proof"]["unit_group_proof_status"], "unknown"
