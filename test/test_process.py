@@ -2193,7 +2193,8 @@ def drift():
 t = threading.Thread(target=drift)
 t.start()
 t.join()
-# join() returns before the kernel task is gone; wait until it is.
+# join() returns before the kernel task is gone; wait until it is. The
+# production check can also see an exited thread's task in this window.
 while len(os.listdir("/proc/self/task")) > 1:
     time.sleep(0.001)
 t2 = threading.Event()
@@ -2208,7 +2209,8 @@ sys.stdin.readline()
         # the sample; a live drifted thread must.
         live = child.replace(
             "t = threading.Thread(target=drift)\nt.start()\nt.join()\n"
-            "# join() returns before the kernel task is gone; wait until it is.\n"
+            "# join() returns before the kernel task is gone; wait until it is. The\n"
+            "# production check can also see an exited thread's task in this window.\n"
             "while len(os.listdir(\"/proc/self/task\")) > 1:\n"
             "    time.sleep(0.001)\n",
             "ev = threading.Event()\n"

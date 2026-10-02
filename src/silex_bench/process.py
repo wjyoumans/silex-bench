@@ -639,8 +639,12 @@ def process_cpu_runtime_ns(pid: int) -> int | None:
 def _thread_group_affinities(pid: int) -> dict[int, list[int]]:
     """Return the CPU affinity of every thread of ``pid``, keyed by TID.
 
-    A thread that exits between listing and reading is skipped. The leader
-    (TID == ``pid``) must be present or the read fails.
+    A thread that exits between listing and reading is skipped. A thread
+    that has just exited but is still listed in ``/proc/<pid>/task`` is read
+    and counted, so the check is best-effort for drifted-then-exited threads:
+    every thread inherits the taskset affinity, so only a thread that changed
+    its own affinity can trip it. The leader (TID == ``pid``) must be present
+    or the read fails.
     """
     affinities: dict[int, list[int]] = {}
     for entry in os.listdir(f"/proc/{pid}/task"):
