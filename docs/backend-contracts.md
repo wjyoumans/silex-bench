@@ -21,8 +21,14 @@ decimal strings.
   the stronger source identity.
 - **Hecke/OSCAR** constructs uncached fields and LLL-reduced maximal orders
   before timing and calls the non-GRH
-  `class_group(...; GRH=false, redo=true)` route in Hecke's
-  `src/NumFieldOrd/NfOrd/Clgp.jl`. The following `unit_group` lookup reads the
+  `class_group(...; GRH=false, redo=true, do_lll=false)` route in Hecke's
+  `src/NumFieldOrd/NfOrd/Clgp.jl`. The adapter passes `do_lll=false`
+  explicitly because the order is already LLL-reduced before timing; the
+  keyword is a Hecke tuning option, not a proof option, and the proof labels
+  still come only from the `GRH` flags described below. This repository
+  carries no pinned Hecke source, so that `do_lll` leaves the non-GRH proof
+  route unchanged is the adapter's reading of Hecke's interface, not an
+  independently verified fact. The following `unit_group` lookup reads the
   shared class/unit result created within that same sample; fresh independently
   prepared orders prevent reuse across timing samples. It uses the active Julia
   environment unless a project override is configured. Because Julia is JIT
@@ -217,8 +223,18 @@ whole-process wall envelope and label that different scope and clock explicitly.
 The supervisor also reports `effective_affinity` (read once the target is
 ready) and, when a CPU was requested, `effective_affinity_after_target` (read
 again after the target marker). When a CPU was requested, either read failing
-or differing from that singleton CPU fails the sample as a protocol failure,
-not a timeout. Both reads inspect the target's thread-group leader only.
+or differing from that singleton CPU fails the sample as a protocol failure.
+That failure does not set the timeout flag itself, but it is classified like
+any other failure at the moment it is raised: if the observation deadline has
+already passed and the target is still running, the row is recorded as a
+timeout. Both reads inspect the target's thread-group leader only.
+
+Timeout enforcement is best effort at the margins. A deadline that passes
+while the harness is between steps (for example between the supervisor
+handshake and the first read) still gets one non-blocking observation of the
+process, so a successful sample can report a process wall time slightly above
+the configured cutoff. Such a sample is kept as a success and is not
+reclassified.
 
 The target marker must be a complete line of its own. The harness scans the
 target segment from the start of the stdout line in progress at dispatch, so a
