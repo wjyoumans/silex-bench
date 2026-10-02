@@ -2198,6 +2198,40 @@ sys.stdin.readline()
         )
         self._assert_descendant_killed(int(lines["PID"]))
 
+    def test_nonzero_exit_with_outlived_descendant_reports_both(self) -> None:
+        script = self._LEAVES_DESCENDANT + "sys.exit(3)\n"
+        with tempfile.TemporaryDirectory() as temporary:
+            result = run_process(
+                [sys.executable, "-c", script], timeout=20.0, cwd=Path(temporary)
+            )
+        self.assertFalse(result["success"], result)
+        self.assertEqual(result["returncode"], 3)
+        self.assertTrue(result["descendants_outlived_target"])
+        self.assertIn("descendants_outlived_target", result["error"])
+        self.assertEqual(result["failure_origin"], "target")
+        self._assert_descendant_killed(int(result["stdout"].split()[0]))
+
+    def test_outlived_reason_is_appended_to_existing_error_text(self) -> None:
+        channel = SimpleNamespace(
+            exit_report=lambda: ("target", 3, None),
+            close=lambda: None,
+            envelope_ns=None,
+            descendants_outlived=True,
+        )
+        result = process_module._with_failure_origin(
+            {
+                "success": False,
+                "returncode": 3,
+                "error": "output limit exceeded",
+            },
+            cast(Any, channel),
+        )
+        self.assertEqual(
+            result["error"], "output limit exceeded; descendants_outlived_target"
+        )
+        self.assertTrue(result["descendants_outlived_target"])
+        self.assertEqual(result["failure_origin"], "target")
+
     def test_process_without_descendants_is_not_flagged(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             result = run_process(

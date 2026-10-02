@@ -1339,8 +1339,12 @@ def _with_failure_origin(
         if channel.descendants_outlived:
             result["success"] = False
             result["descendants_outlived_target"] = True
-            if not result.get("error"):
-                result["error"] = "descendants_outlived_target"
+            existing = result.get("error")
+            result["error"] = (
+                f"{existing}; descendants_outlived_target"
+                if existing
+                else "descendants_outlived_target"
+            )
     returncode = result.get("returncode")
     if result.get("success") is True or returncode is None or status != returncode:
         origin = None

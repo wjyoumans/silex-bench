@@ -190,20 +190,22 @@ The whole-process envelope reported as `process_wall_ms` is measured by the
 supervisor on `CLOCK_MONOTONIC`, from immediately before it spawns the target
 to the moment it reaps the target, and is sent over the control pipe as a
 `WALL <nanoseconds>` line. It excludes the harness-side launch, the
-supervisor's interpreter startup, the handshake, and the exit-poll quantum,
-which together made the earlier harness clock about 20 ms longer on a trivial
-target. The `taskset` launcher's exec is still inside the envelope, as it is
-part of the spawned target. When no such line arrives (timeouts, stop requests, supervisor failures) the harness-measured
-elapsed time at classification is reported instead.
+supervisor's interpreter startup, the handshake, and the exit-poll quantum.
+The `taskset` launcher's exec is still inside the envelope, as it is part of
+the spawned target. When no such line arrives (timeouts, stop requests,
+supervisor failures) the harness-measured elapsed time at classification is
+reported instead.
 
 At the moment the target is reaped the supervisor enumerates its remaining
 descendants. If any are alive it reports `OUTLIVED`, kills them immediately
 (there is no polling drain), and the result is a failure with
-`success = false`, `descendants_outlived_target = true`, and `error`
-`descendants_outlived_target` (an existing error text is kept). The target's
-own `returncode` is preserved. A leader that exits and leaves a live
-detached child is therefore never a success, and the child's lifetime is
-never part of the envelope.
+`success = false`, `descendants_outlived_target = true`, and
+`descendants_outlived_target` in `error` (appended to an existing error text).
+The target's own `returncode` is preserved. A leader that exits and leaves a
+live detached child is therefore never a success, and the child's lifetime is
+never part of the envelope. `failure_origin` describes only who produced the
+exit status; the outlived reason is carried by `error` and
+`descendants_outlived_target`.
 
 Timeout classification uses what the harness can already observe, not when it
 happens to look. When the observation deadline has passed, the helper first
