@@ -1398,6 +1398,48 @@ sys.stdin.readline()
         self.assertEqual(result["effective_affinity"], [cpu])
         self.assertIsNone(result["effective_affinity_after_target"])
 
+    def test_marked_process_without_cpu_tolerates_affinity_read_error(self) -> None:
+        # With no requested CPU an unreadable affinity is not a failure; the
+        # recorded affinity stays None and the sample still succeeds.
+        if not hasattr(os, "sched_getaffinity"):
+            self.skipTest("sched_getaffinity is unavailable")
+
+        class FailingOs:
+            def __getattr__(self, name: str) -> Any:
+                return getattr(os, name)
+
+            def sched_getaffinity(self, pid: int) -> Any:
+                if pid != 0:
+                    raise OSError("simulated affinity read failure")
+                return os.sched_getaffinity(pid)
+
+        child = """
+import sys
+sys.stdin.readline()
+print("READY", flush=True)
+nonce = sys.stdin.readline().strip()
+print("TARGET:" + nonce, flush=True)
+sys.stdin.readline()
+"""
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.object(
+            process_module, "os", FailingOs()
+        ):
+            result = run_marked_process(
+                [sys.executable, "-u", "-c", child],
+                ready_input="start\n",
+                target_input=TARGET_NONCE_PLACEHOLDER + "\n",
+                final_input="finish\n",
+                ready_marker="READY",
+                target_marker="TARGET",
+                timeout=5.0,
+                cwd=Path(temporary),
+                cpu=None,
+            )
+
+        self.assertTrue(result["success"], result.get("error"))
+        self.assertIsNone(result["effective_affinity"])
+        self.assertIsNone(result["effective_affinity_after_target"])
+
     def test_marked_process_keeps_an_unchanged_affinity_after_target(self) -> None:
         # Counterpart to the affinity-drift failure above: a target that
         # stays on its requested CPU passes the post-target re-check.

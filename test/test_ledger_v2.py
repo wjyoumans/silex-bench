@@ -732,6 +732,27 @@ class LegacyLedgerTests(unittest.TestCase):
         self.assertEqual(self.path.read_bytes(), original)
         self.assertEqual(self.path.stat().st_mtime_ns, original_mtime_ns)
 
+    def test_v1_target_cpu_uses_backend_value_not_marked_diagnostic(self) -> None:
+        with RunLedger(self.legacy_dir) as ledger:
+            template = ledger.observations()[0]
+
+            def synthesize(internal: object) -> dict[str, object]:
+                observation = {**template, "internal_timing": internal}
+                with mock.patch.object(
+                    ledger, "observations", return_value=[observation]
+                ):
+                    return ledger.timing_samples()[0]
+
+            both = synthesize(
+                {"target_cpu_ms": 2.0, "marked_target_cpu_ms": 11.0}
+            )
+            self.assertEqual(both["target_cpu_ns"], 2_000_000)
+            self.assertIsNone(
+                synthesize({"marked_target_cpu_ms": 11.0})["target_cpu_ns"]
+            )
+            self.assertIsNone(synthesize({"target_cpu_ms": -1.0})["target_cpu_ns"])
+            self.assertIsNone(synthesize({"target_cpu_ms": True})["target_cpu_ns"])
+
     def test_v1_resume_and_every_mutation_entrypoint_are_rejected(self) -> None:
         original = self.path.read_bytes()
         original_mtime_ns = self.path.stat().st_mtime_ns

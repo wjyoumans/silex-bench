@@ -1891,6 +1891,7 @@ def run_marked_process(
             return failure(
                 "marked process reached target marker before target dispatch"
             )
+        affinity_mismatch: str | None = None
         try:
             effective_affinity, affinity_mismatch = _check_thread_affinities(
                 target_pid, cpu
