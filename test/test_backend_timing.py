@@ -14,6 +14,7 @@ from silex_bench.backends.hecke import (
 from silex_bench.backends.magma import (
     MagmaBackend,
     _failure_detail as magma_failure_detail,
+    _normalized_result as magma_normalized_result,
     _program_parts as magma_programs,
 )
 from silex_bench.backends.pari import (
@@ -2379,6 +2380,41 @@ class ExternalUnitGroupReadbackTests(unittest.TestCase):
         self.assertNotIn("UnitRank", magma_final)
         self.assertNotIn("fundamental_units_target", magma_target)
 
+    def test_magma_reports_polynomial_discriminant_and_signature(self) -> None:
+        _, _, class_final = magma_programs(class_unit_request())
+        self.assertIn(
+            'printf "polynomial_discriminant=%o\\n", Discriminant(f_target);',
+            class_final,
+        )
+        maximal_order = SampleRequest(
+            field=field("target", -5),
+            operation="maximal_order",
+            sample_kind="measured",
+            sample_index=0,
+            warmup=None,
+            seed=1,
+        )
+        _, _, order_final = magma_programs(maximal_order)
+        for key in ("polynomial_discriminant", "signature_r1", "signature_r2"):
+            self.assertIn(f'printf "{key}=', order_final)
+
+        result, missing = magma_normalized_result(
+            "maximal_order",
+            {
+                "polynomial_discriminant": "-20",
+                "maximal_order_discriminant": "-20",
+                "signature_r1": "0",
+                "signature_r2": "1",
+            },
+        )
+        self.assertEqual(missing, [])
+        self.assertEqual(result["polynomial_discriminant"], "-20")
+        self.assertEqual(result["signature"], [0, 1])
+        result, _ = magma_normalized_result(
+            "class_unit_proven", {"polynomial_discriminant": "-20"}
+        )
+        self.assertEqual(result["polynomial_discriminant"], "-20")
+
     def test_hecke_jit_pair_reads_both_unit_groups(self) -> None:
         sample = SampleRequest(
             field=field("target", -5),
@@ -2465,7 +2501,12 @@ class MagmaParsingTests(unittest.TestCase):
         )
         self.assertTrue(payload["success"], payload["error"])
         self.assertEqual(
-            payload["result"], {"maximal_order_discriminant": "-20"}
+            payload["result"],
+            {
+                "polynomial_discriminant": None,
+                "maximal_order_discriminant": "-20",
+                "signature": None,
+            },
         )
         self.assertEqual(payload["target_cpu_ms"], 500.0)
         self.assertEqual(payload["target_wall_ms"], 600.0)

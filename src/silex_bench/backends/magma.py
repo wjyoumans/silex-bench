@@ -167,6 +167,7 @@ fundamental_units_target := [
 printf "fundamental_unit_count=%o\\n", #fundamental_units_target;
 printf "signature_r1=%o\\n", r1_target;
 printf "signature_r2=%o\\n", r2_target;
+printf "polynomial_discriminant=%o\\n", Discriminant(f_target);
 printf "maximal_order_discriminant=%o\\n", Discriminant(O_target);
 printf "class_cpu_seconds=%o\\n", class_cpu_seconds;
 printf "class_wall_seconds=%o\\n", class_wall_seconds;
@@ -187,6 +188,10 @@ target_internal_wall_seconds := Realtime(target_wall_start);
 printf "{_TARGET_MARKER}:{TARGET_NONCE_PLACEHOLDER}\\n";
 """
         final = """
+r1_target, r2_target := Signature(K_target);
+printf "signature_r1=%o\\n", r1_target;
+printf "signature_r2=%o\\n", r2_target;
+printf "polynomial_discriminant=%o\\n", Discriminant(f_target);
 printf "maximal_order_discriminant=%o\\n", Discriminant(O_target);
 printf "target_internal_cpu_seconds=%o\\n", target_internal_cpu_seconds;
 printf "target_internal_wall_seconds=%o\\n", target_internal_wall_seconds;
@@ -261,6 +266,7 @@ def _normalized_result(
             "signature": [r1, r2]
             if r1 is not None and r2 is not None
             else None,
+            "polynomial_discriminant": values.get("polynomial_discriminant"),
             "maximal_order_discriminant": values.get(
                 "maximal_order_discriminant"
             ),
@@ -273,10 +279,16 @@ def _normalized_result(
             "maximal_order_discriminant",
         ]
     elif operation == "maximal_order":
+        r1 = parse_int(values, "signature_r1")
+        r2 = parse_int(values, "signature_r2")
         result = {
+            "polynomial_discriminant": values.get("polynomial_discriminant"),
             "maximal_order_discriminant": values.get(
                 "maximal_order_discriminant"
-            )
+            ),
+            "signature": [r1, r2]
+            if r1 is not None and r2 is not None
+            else None,
         }
         required = ["maximal_order_discriminant"]
     elif operation == "ideal_multiply":
