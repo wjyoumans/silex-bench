@@ -668,7 +668,7 @@ class ProcessTests(unittest.TestCase):
             self.assertIn("error-partial", result["stderr"])
             self.assertLess(elapsed, 2.0)
 
-    def test_process_timeout_kills_group_after_leader_exits(self) -> None:
+    def test_process_kills_group_after_leader_exits(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             marker = Path(temporary) / "descendant-survived"
             descendant = (
@@ -688,9 +688,12 @@ class ProcessTests(unittest.TestCase):
                 cwd=Path(temporary),
             )
 
+            # The leader exits before the deadline, so the live descendant is
+            # killed at the exit and the sample fails as an outlived
+            # descendant rather than as a timeout.
             self.assertTrue(result["available"])
             self.assertFalse(result["success"])
-            self.assertTrue(result["timeout"])
+            self.assertEqual(result["error"], "descendants_outlived_target")
             time.sleep(0.9)
             self.assertFalse(marker.exists())
 
@@ -2103,6 +2106,105 @@ sys.stdin.readline()
         siblings = process_module._read_thread_siblings(cpu) or set()
         self.assertTrue(supervisor_cpus.isdisjoint(siblings))
         self.assertEqual(supervisor_cpus, expected_supervisor_cpus)
+
+    def test_process_wall_is_the_supervisor_spawn_to_reap_envelope(self) -> None:
+        # The harness-side clock is made to advance 10 s per read. A result
+        # that still came from that clock would report at least 10 s; the
+        # supervisor's CLOCK_MONOTONIC spawn-to-reap envelope does not.
+        ticks = iter(range(0, 10**6))
+
+        def fake_perf_counter_ns() -> int:
+            return next(ticks) * 10_000_000_000
+
+        with tempfile.TemporaryDirectory() as temporary:
+            with mock.patch.object(
+                process_module.time, "perf_counter_ns", fake_perf_counter_ns
+            ):
+                result = run_process(
+                    [sys.executable, "-c", "import time; time.sleep(0.2)"],
+                    timeout=10.0,
+                    cwd=Path(temporary),
+                )
+        self.assertTrue(result["success"], result)
+        self.assertGreaterEqual(result["process_wall_ms"], 200.0)
+        self.assertLess(result["process_wall_ms"], 5000.0)
+
+    _LEAVES_DESCENDANT = (
+        "import subprocess, sys\n"
+        "child = subprocess.Popen([sys.executable, '-c', "
+        "'import time; time.sleep(30)'], start_new_session=True)\n"
+        "print(child.pid, flush=True)\n"
+    )
+
+    def _assert_descendant_killed(self, pid: int) -> None:
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.01)
+        os.kill(pid, signal.SIGKILL)
+        self.fail("descendant outlived the target and was not killed")
+
+    def test_process_fails_and_kills_descendant_that_outlives_the_target(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            started = time.monotonic()
+            result = run_process(
+                [sys.executable, "-c", self._LEAVES_DESCENDANT],
+                timeout=20.0,
+                cwd=Path(temporary),
+            )
+            elapsed = time.monotonic() - started
+        self.assertFalse(result["success"], result)
+        self.assertFalse(result["timeout"], result)
+        self.assertEqual(result["error"], "descendants_outlived_target")
+        self.assertTrue(result["descendants_outlived_target"])
+        self.assertLess(elapsed, 15.0)
+        self.assertLess(result["process_wall_ms"], 15000.0)
+        self._assert_descendant_killed(int(result["stdout"].split()[0]))
+
+    def test_marked_process_fails_and_kills_descendant_that_outlives_the_target(
+        self,
+    ) -> None:
+        child = (
+            "import subprocess, sys\n"
+            "sys.stdin.readline()\n"
+            "print('READY', flush=True)\n"
+            "nonce = sys.stdin.readline().strip()\n"
+            "child = subprocess.Popen([sys.executable, '-c', "
+            "'import time; time.sleep(30)'], start_new_session=True)\n"
+            "print('PID:%d' % child.pid, flush=True)\n"
+            "print('TARGET:' + nonce, flush=True)\n"
+            "sys.stdin.readline()\n"
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            result = run_marked_process(
+                [sys.executable, "-u", "-c", child],
+                ready_input="start\n",
+                target_input=TARGET_NONCE_PLACEHOLDER + "\n",
+                final_input="finish\n",
+                ready_marker="READY",
+                target_marker="TARGET",
+                timeout=20.0,
+                cwd=Path(temporary),
+            )
+        self.assertFalse(result["success"], result)
+        self.assertEqual(result["error"], "descendants_outlived_target")
+        lines = dict(
+            line.split(":", 1) for line in result["stdout"].splitlines() if ":" in line
+        )
+        self._assert_descendant_killed(int(lines["PID"]))
+
+    def test_process_without_descendants_is_not_flagged(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            result = run_process(
+                [sys.executable, "-c", "pass"], timeout=10.0, cwd=Path(temporary)
+            )
+        self.assertTrue(result["success"], result)
+        self.assertNotIn("descendants_outlived_target", result)
 
     def test_supervisor_stays_asleep_during_the_run(self) -> None:
         # The supervisor once polled every 5 ms (about 200 wakeups/s) instead

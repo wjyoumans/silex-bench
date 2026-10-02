@@ -402,6 +402,9 @@ def main():
     if not sys.argv[1:]:
         report(control_fd, "ERROR supervisor target command is empty")
         os._exit(126)
+    # Start of the whole-process envelope: taken immediately before the spawn so
+    # the supervisor's own startup, handshake and taskset exec are excluded.
+    spawn_ns = time.monotonic_ns()
     try:
         target = subprocess.Popen(
             sys.argv[1:],
@@ -445,6 +448,10 @@ def main():
             handle_stop_request(target, target_pidfd)
         returncode = target.poll()
         if returncode is not None:
+            # End of the envelope: the target is reaped. CLOCK_MONOTONIC
+            # spawn-to-reap, reported over the control channel.
+            reaped_ns = time.monotonic_ns()
+            report_post_handshake(f"WALL {reaped_ns - spawn_ns}")
             while True:
                 try:
                     waited, _ = os.waitpid(-1, os.WNOHANG)
@@ -452,14 +459,12 @@ def main():
                     break
                 if waited <= 0:
                     break
-            if not descendants():
-                finish(returncode)
-            # The target has already exited; this only waits out orphaned
-            # descendants during subreaper cleanup, so it no longer runs
-            # during the timed interval. A short poll here is simpler than a
-            # pidfd per descendant and does not affect measurement.
-            time.sleep(0.005)
-            continue
+            # Descendants still alive now outlived the target. They are killed
+            # at once (no polling drain) and the harness fails the sample.
+            if descendants():
+                report_post_handshake("OUTLIVED")
+                terminate_descendants()
+            finish(returncode)
         wait_for_event()
 
 
@@ -1251,6 +1256,8 @@ class _SupervisorChannel:
         self._descriptor = descriptor
         self._buffer = bytearray(pending)
         self._report: tuple[str | None, int | None, str | None] | None = None
+        self.envelope_ns: int | None = None
+        self.descendants_outlived = False
 
     def _read_available(self) -> None:
         if self._descriptor < 0:
@@ -1284,6 +1291,12 @@ class _SupervisorChannel:
                 errors.append(line[len("ERROR "):])
                 continue
             fields = line.split()
+            if len(fields) == 2 and fields[0] == "WALL" and fields[1].isdigit():
+                self.envelope_ns = int(fields[1])
+                continue
+            if fields == ["OUTLIVED"]:
+                self.descendants_outlived = True
+                continue
             if (
                 len(fields) == 3
                 and fields[0] == "EXIT"
@@ -1318,6 +1331,16 @@ def _with_failure_origin(
     if channel is not None:
         origin, status, supervisor_error = channel.exit_report()
         channel.close()
+    if channel is not None:
+        if channel.envelope_ns is not None and "process_wall_ms" in result:
+            # Supervisor-measured spawn-to-reap CLOCK_MONOTONIC envelope; it
+            # excludes harness and supervisor startup overhead.
+            result["process_wall_ms"] = channel.envelope_ns / 1_000_000
+        if channel.descendants_outlived:
+            result["success"] = False
+            result["descendants_outlived_target"] = True
+            if not result.get("error"):
+                result["error"] = "descendants_outlived_target"
     returncode = result.get("returncode")
     if result.get("success") is True or returncode is None or status != returncode:
         origin = None

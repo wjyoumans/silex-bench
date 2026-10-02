@@ -111,7 +111,11 @@ with `jit_repetitions = 1` record `first_call` and `repeat_call` in one Julia
 process on independently prepared objects, preventing cross-sample mathematical
 cache reuse. Keep these series separate. Integrated S-unit work instead uses
 one explicitly labeled supervisor-measured whole-process sample and does not
-use this JIT pair policy. Do not merge different timing scopes or clocks.
+use this JIT pair policy. That envelope runs from the supervisor's spawn of the
+target to its reap of the target on `CLOCK_MONOTONIC`; it excludes harness and
+supervisor startup. A target that leaves a descendant alive at its exit has
+that descendant killed and the sample fails with
+`descendants_outlived_target`; it is never a timing sample. Do not merge different timing scopes or clocks.
 
 A successful mathematical observation needs valid proof evidence and agreeing
 canonical results before its samples can enter a timing summary. Admitted
