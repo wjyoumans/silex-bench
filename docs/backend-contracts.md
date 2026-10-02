@@ -20,15 +20,15 @@ decimal strings.
   optional version/source pins when configured. Publication export requires
   the stronger source identity.
 - **Hecke/OSCAR** constructs uncached fields and LLL-reduced maximal orders
-  before timing and calls the non-GRH
-  `class_group(...; GRH=false, redo=true, do_lll=false)` route in Hecke's
-  `src/NumFieldOrd/NfOrd/Clgp.jl`. The adapter passes `do_lll=false`
-  explicitly because the order is already LLL-reduced before timing; the
-  keyword is a Hecke tuning option, not a proof option, and the proof labels
-  still come only from the `GRH` flags described below. This repository
-  carries no pinned Hecke source, so that `do_lll` leaves the non-GRH proof
-  route unchanged is the adapter's reading of Hecke's interface, not an
-  independently verified fact. The following `unit_group` lookup reads the
+  before timing and calls
+  `class_group(...; GRH=false, redo=true, do_lll=false)`. The adapter passes
+  `do_lll=false` explicitly (in the generated Julia program built in
+  `src/silex_bench/backends/hecke.py`) because the order is already
+  LLL-reduced before timing. The adapter reads `do_lll` as a tuning option
+  and not a proof option, so the proof labels still come only from the `GRH`
+  flags described below. This repository carries no pinned Hecke source, so
+  that reading of Hecke's interface, including that `do_lll` leaves the
+  non-GRH proof route unchanged, is not independently verified. The following `unit_group` lookup reads the
   shared class/unit result created within that same sample; fresh independently
   prepared orders prevent reuse across timing samples. It uses the active Julia
   environment unless a project override is configured. Because Julia is JIT
