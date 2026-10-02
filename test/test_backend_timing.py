@@ -13,6 +13,7 @@ from silex_bench.backends.hecke import (
 )
 from silex_bench.backends.magma import (
     MagmaBackend,
+    _failure_detail as magma_failure_detail,
     _program_parts as magma_programs,
 )
 from silex_bench.backends.pari import (
@@ -2331,6 +2332,26 @@ class ExternalUnitGroupReadbackTests(unittest.TestCase):
                     "proven" if unit_flag == "true" else "unknown",
                 )
 
+    def test_pari_bnfcertify_failure_with_matching_units_is_failed(self) -> None:
+        stdout = _pari_class_unit_stdout(1).replace("certified=1", "certified=0")
+        payload = _run_external_class_unit("pari", stdout)
+
+        self.assertFalse(payload["success"])
+        self.assertFalse(payload["proof"]["proof_complete"])
+        self.assertEqual(payload["proof"]["certification_status"], "failed")
+        for key in (
+            "class_group_proof_status",
+            "unit_group_proof_status",
+            "regulator_proof_status",
+        ):
+            self.assertEqual(payload["proof"][key], "unknown")
+
+    def test_pari_unit_count_mismatch_is_unknown_not_failed(self) -> None:
+        payload = _run_external_class_unit("pari", _pari_class_unit_stdout(2))
+
+        self.assertFalse(payload["success"])
+        self.assertEqual(payload["proof"]["certification_status"], "unknown")
+
     def test_programs_read_units_back_outside_the_timed_region(self) -> None:
         sample = class_unit_request()
 
@@ -2376,6 +2397,149 @@ class ExternalUnitGroupReadbackTests(unittest.TestCase):
         self.assertIn("!first_class_ctx.GRH && !repeat_class_ctx.GRH", final)
         self.assertIn("bench_unit_group_grh_free(first_O, first_unit_ctx)", final)
         self.assertIn("bench_unit_group_grh_free(repeat_O, repeat_unit_ctx)", final)
+
+
+def _run_magma(
+    operation: str, stdout: str, **overrides: object
+) -> dict[str, object]:
+    backend = MagmaBackend()
+    backend._probe = {
+        "engine": "magma",
+        "available": True,
+        "engine_identity": {"executable": "/usr/local/bin/magma"},
+    }
+    raw = {**marked_result(stdout), **overrides}
+    with tempfile.TemporaryDirectory() as temporary, mock.patch(
+        "silex_bench.backends.magma.run_marked_process",
+        return_value=raw,
+    ):
+        return backend.run(
+            request(operation=operation), context(Path(temporary))
+        )
+
+
+_MAGMA_TIMES = (
+    "target_internal_cpu_seconds=0.5\n"
+    "target_internal_wall_seconds=0.6\n"
+)
+
+
+class MagmaParsingTests(unittest.TestCase):
+    def test_class_unit_proven_parses_and_labels_proven(self) -> None:
+        payload = _run_magma("class_unit_proven", _magma_class_unit_stdout(1))
+        self.assertTrue(payload["success"], payload["error"])
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["result"]["class_order"], "1")
+        self.assertEqual(payload["result"]["class_invariants"], [])
+        self.assertEqual(payload["result"]["unit_rank"], 1)
+        self.assertEqual(payload["result"]["signature"], [2, 0])
+        self.assertEqual(payload["proof"]["certification_status"], "proven")
+        self.assertTrue(payload["proof"]["proof_complete"])
+        self.assertEqual(
+            payload["timing"]["components_ms"]["class"]["cpu_ms"], 1.0
+        )
+
+    def test_element_square_root_requires_found_and_verified(self) -> None:
+        payload = _run_magma(
+            "element_square_root",
+            "root_found=true\nroot_verified=true\n" + _MAGMA_TIMES,
+        )
+        self.assertTrue(payload["success"], payload["error"])
+        self.assertEqual(
+            payload["result"], {"root_found": True, "root_verified": True}
+        )
+        self.assertEqual(payload["proof"]["certification_status"], "not_applicable")
+        for found, verified in (("true", "false"), ("false", "false")):
+            with self.subTest(found=found, verified=verified):
+                payload = _run_magma(
+                    "element_square_root",
+                    f"root_found={found}\nroot_verified={verified}\n"
+                    + _MAGMA_TIMES,
+                )
+                self.assertFalse(payload["success"])
+                self.assertEqual(payload["status"], "compute_error")
+
+    def test_maximal_order_parses_discriminant(self) -> None:
+        payload = _run_magma(
+            "maximal_order", "maximal_order_discriminant=-20\n" + _MAGMA_TIMES
+        )
+        self.assertTrue(payload["success"], payload["error"])
+        self.assertEqual(
+            payload["result"], {"maximal_order_discriminant": "-20"}
+        )
+        self.assertEqual(payload["target_cpu_ms"], 500.0)
+        self.assertEqual(payload["target_wall_ms"], 600.0)
+
+    def test_missing_field_is_compute_error(self) -> None:
+        for operation, stdout, missing in (
+            ("maximal_order", _MAGMA_TIMES, "maximal_order_discriminant"),
+            ("ideal_multiply", _MAGMA_TIMES, "ideal_norm"),
+            (
+                "class_unit_proven",
+                "".join(
+                    line + "\n"
+                    for line in _magma_class_unit_stdout(1).splitlines()
+                    if not line.startswith("class_order=")
+                ),
+                "class_order",
+            ),
+        ):
+            with self.subTest(operation=operation):
+                payload = _run_magma(operation, stdout)
+                self.assertFalse(payload["success"])
+                self.assertEqual(payload["status"], "compute_error")
+                self.assertIn(missing, payload["error"])
+                self.assertFalse(payload["proof"]["final_result_published"])
+
+    def test_license_failure_is_unavailable(self) -> None:
+        for text in (
+            "Couldn't create socket for MAC address startup",
+            "Unable to find a valid Magma license",
+        ):
+            with self.subTest(text=text):
+                payload = _run_magma(
+                    "maximal_order",
+                    "",
+                    success=False,
+                    stderr=text + "\n",
+                    error="exit 1",
+                )
+                self.assertFalse(payload["success"])
+                self.assertFalse(payload["available"])
+                self.assertEqual(payload["status"], "unavailable")
+                self.assertIn("license", payload["error"])
+
+    def test_non_license_failure_is_compute_error(self) -> None:
+        payload = _run_magma(
+            "maximal_order",
+            "",
+            success=False,
+            stderr="Runtime error: bad thing\n",
+            error="exit 1",
+        )
+        self.assertEqual(payload["status"], "compute_error")
+        self.assertTrue(payload["available"])
+        self.assertIn("Runtime error: bad thing", payload["error"])
+
+    def test_failure_detail_skips_trailing_benign_line(self) -> None:
+        raw = {
+            "error": "exit 1",
+            "stdout": "",
+            "stderr": (
+                "Runtime error in 'MaximalOrder': out of memory\n"
+                "\n"
+                "Total time: 0.010 seconds, Total memory usage: 32.09MB\n"
+            ),
+        }
+        detail = magma_failure_detail(raw)
+        self.assertIn("Runtime error in 'MaximalOrder'", detail)
+        self.assertNotIn("Total time", detail)
+
+    def test_failure_detail_without_trailer_uses_last_line(self) -> None:
+        detail = magma_failure_detail(
+            {"error": "exit 1", "stdout": "a\nb\n", "stderr": ""}
+        )
+        self.assertEqual(detail, "exit 1: b")
 
 
 class HeckeRealEngineRankZeroTests(unittest.TestCase):

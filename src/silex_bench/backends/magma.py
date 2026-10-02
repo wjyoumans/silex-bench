@@ -97,6 +97,11 @@ def _failure_detail(raw: dict[str, Any]) -> str:
         return license_error
     message = str(raw.get("error") or "Magma execution failed")
     lines = [line.strip() for line in output.splitlines() if line.strip()]
+    # Magma prints a resource-usage trailer on exit; it is not the error.
+    informative = [
+        line for line in lines if not line.startswith("Total time:")
+    ]
+    lines = informative or lines
     if lines:
         message += f": {lines[-1][:500]}"
     return message
