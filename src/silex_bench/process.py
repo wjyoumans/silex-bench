@@ -617,10 +617,57 @@ def _target_nonce_is_valid(value: Any) -> bool:
 
 
 def process_cpu_runtime_ns(pid: int) -> int | None:
+    """Whole-thread-group user+system CPU time of ``pid`` in nanoseconds.
+
+    Reads utime+stime from ``/proc/<pid>/stat``, which accumulates every
+    thread of the process, including threads that have already exited. The
+    resolution is one clock tick. Diagnostic only; backends report their own
+    CPU value.
+    """
     try:
-        return int(Path(f"/proc/{pid}/schedstat").read_text().split()[0])
+        text = Path(f"/proc/{pid}/stat").read_text()
+        # The command name (field 2) may contain spaces and parentheses, so
+        # split after its closing parenthesis; utime and stime are fields
+        # 14 and 15, i.e. indexes 11 and 12 of the remainder (field 3 first).
+        fields = text[text.rindex(")") + 2 :].split()
+        ticks = int(fields[11]) + int(fields[12])
+        return ticks * 1_000_000_000 // os.sysconf("SC_CLK_TCK")
     except (IndexError, OSError, ValueError):
         return None
+
+
+def _thread_group_affinities(pid: int) -> dict[int, list[int]]:
+    """Return the CPU affinity of every thread of ``pid``, keyed by TID.
+
+    A thread that exits between listing and reading is skipped. The leader
+    (TID == ``pid``) must be present or the read fails.
+    """
+    affinities: dict[int, list[int]] = {}
+    for entry in os.listdir(f"/proc/{pid}/task"):
+        try:
+            tid = int(entry)
+        except ValueError:
+            continue
+        try:
+            affinities[tid] = sorted(os.sched_getaffinity(tid))
+        except ProcessLookupError:
+            continue
+    if pid not in affinities:
+        raise OSError(f"could not read the affinity of process {pid}")
+    return affinities
+
+
+def _check_thread_affinities(
+    pid: int, cpu: int | None
+) -> tuple[list[int], str | None]:
+    """Return the leader affinity and a mismatch message for ``cpu``."""
+    affinities = _thread_group_affinities(pid)
+    leader = affinities[pid]
+    if cpu is not None:
+        for tid, affinity in sorted(affinities.items()):
+            if affinity != [cpu]:
+                return leader, f"thread {tid} has affinity {affinity}"
+    return leader, None
 
 
 @functools.lru_cache(maxsize=1)
@@ -1841,17 +1888,19 @@ def run_marked_process(
                 "marked process reached target marker before target dispatch"
             )
         try:
-            effective_affinity = sorted(os.sched_getaffinity(target_pid))
+            effective_affinity, affinity_mismatch = _check_thread_affinities(
+                target_pid, cpu
+            )
         except (AttributeError, OSError) as exc:
             if cpu is not None:
                 return failure(
                     "could not verify marked process CPU affinity after "
                     f"readiness: {exc}"
                 )
-        if cpu is not None and effective_affinity != [cpu]:
+        if cpu is not None and affinity_mismatch is not None:
             return failure(
                 "marked process CPU affinity does not match the requested "
-                f"CPU {cpu}: {effective_affinity}"
+                f"CPU {cpu}: {effective_affinity} ({affinity_mismatch})"
             )
 
         # One non-resetting deadline covers process launch, preparation, the
@@ -1916,19 +1965,20 @@ def run_marked_process(
             # has the readiness check's severity: an unverifiable or changed
             # affinity fails the sample.
             try:
-                effective_affinity_after_target = sorted(
-                    os.sched_getaffinity(target_pid)
-                )
+                (
+                    effective_affinity_after_target,
+                    affinity_mismatch,
+                ) = _check_thread_affinities(target_pid, cpu)
             except (AttributeError, OSError) as exc:
                 return failure(
                     "could not verify marked process CPU affinity after "
                     f"the target marker: {exc}"
                 )
-            if effective_affinity_after_target != [cpu]:
+            if affinity_mismatch is not None:
                 return failure(
                     "marked process CPU affinity after the target marker does "
                     f"not match the requested CPU {cpu}: "
-                    f"{effective_affinity_after_target}"
+                    f"{effective_affinity_after_target} ({affinity_mismatch})"
                 )
 
         if (write_failure := write_input_or_fail(final_input, "final")) is not None:

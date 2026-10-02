@@ -214,7 +214,11 @@ only the class-group and unit-group calls are timed. Result extraction,
 serialization, and correctness comparison happen afterward. The supervisor's
 nonce-bound ready/target markers independently audit those boundaries and
 enforce the observation deadline; its marked wall and CPU values remain in the
-sample diagnostics. The marked wall interval (`target_wall_ms`) runs from
+sample diagnostics: the marked CPU value
+(`marked_target_cpu_ms`) is the whole thread group's user+system time from
+`/proc/<pid>/stat` (including exited threads, clock-tick resolution) and is
+diagnostic only; `target_cpu_ns` comes from the backend's own CPU value. With
+a requested CPU, the affinity check covers every thread of the target. The marked wall interval (`target_wall_ms`) runs from
 writing the target's input to observing its target marker line, so it also
 includes writing that input (up to 1 MiB) and the harness's own wake latency
 in reading the marker off the target's stdout; it is not purely the target's

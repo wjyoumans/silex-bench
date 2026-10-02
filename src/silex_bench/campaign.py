@@ -561,9 +561,7 @@ def _ensure_timing_samples(
     ):
         return observation
     internal = observation.internal_timing
-    target_cpu_ms = internal.get(
-        "marked_target_cpu_ms", internal.get("target_cpu_ms")
-    )
+    target_cpu_ms = internal.get("target_cpu_ms")
     target_cpu_ns = (
         int(round(float(target_cpu_ms) * 1_000_000))
         if isinstance(target_cpu_ms, (int, float))

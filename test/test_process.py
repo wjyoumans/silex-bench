@@ -2123,6 +2123,113 @@ sys.stdin.readline()
         self.assertLessEqual(after - before, 8)
 
 
+class ThreadGroupMetricTests(unittest.TestCase):
+    def test_cpu_runtime_covers_every_thread_of_the_group(self) -> None:
+        # Leader-only schedstat reads ~0 here: the main thread sleeps while
+        # two workers spin. /proc/<pid>/stat utime+stime covers the group.
+        if not Path("/proc/self/stat").exists():
+            self.skipTest("/proc is unavailable")
+        child = """
+import sys, threading, time
+def spin():
+    end = time.process_time() + 0.6
+    x = 0
+    while time.process_time() < end:
+        x += 1
+threads = [threading.Thread(target=spin) for _ in range(2)]
+for t in threads: t.start()
+print("UP", flush=True)
+sys.stdin.readline()
+for t in threads: t.join()
+print("DONE", flush=True)
+sys.stdin.readline()
+"""
+        proc = subprocess.Popen(
+            [sys.executable, "-u", "-c", child],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            assert proc.stdout is not None and proc.stdin is not None
+            self.assertEqual(proc.stdout.readline().strip(), "UP")
+            start = process_module.process_cpu_runtime_ns(proc.pid)
+            proc.stdin.write("go\n")
+            proc.stdin.flush()
+            self.assertEqual(proc.stdout.readline().strip(), "DONE")
+            end = process_module.process_cpu_runtime_ns(proc.pid)
+            leader = int(
+                Path(f"/proc/{proc.pid}/schedstat").read_text().split()[0]
+            )
+            proc.stdin.write("bye\n")
+            proc.stdin.flush()
+        finally:
+            proc.stdin.close() if proc.stdin else None
+            proc.wait(timeout=10)
+        assert start is not None and end is not None
+        # Two workers each burned about 0.6 s of CPU in total, and exited
+        # threads remain counted; allow for tick granularity and the
+        # worker head start before "UP".
+        self.assertGreater(end - start, 400_000_000)
+        self.assertGreater(end, leader * 5)
+
+    def test_cpu_runtime_of_missing_process_is_none(self) -> None:
+        self.assertIsNone(process_module.process_cpu_runtime_ns(2**22 + 12345))
+
+    def test_affinity_check_covers_non_leader_threads(self) -> None:
+        if not hasattr(os, "sched_getaffinity"):
+            self.skipTest("sched_getaffinity is unavailable")
+        if shutil.which("taskset") is None:
+            self.skipTest("taskset is unavailable")
+        cpus = sorted(os.sched_getaffinity(0))
+        if len(cpus) < 2:
+            self.skipTest("needs two CPUs")
+        cpu, other = cpus[0], cpus[1]
+        child = f"""
+import os, sys, threading
+def drift():
+    os.sched_setaffinity(0, {{{other}}})
+t = threading.Thread(target=drift)
+t.start()
+t.join()
+t2 = threading.Event()
+threading.Thread(target=t2.wait, daemon=True).start()
+sys.stdin.readline()
+print("READY", flush=True)
+nonce = sys.stdin.readline().strip()
+print("TARGET:" + nonce, flush=True)
+sys.stdin.readline()
+"""
+        # The drifting thread has exited by readiness, so it must not fail
+        # the sample; a live drifted thread must.
+        live = child.replace(
+            "t = threading.Thread(target=drift)\nt.start()\nt.join()\n",
+            "ev = threading.Event()\n"
+            "def drift_live():\n"
+            f"    os.sched_setaffinity(0, {{{other}}})\n"
+            "    ev.set()\n"
+            "    threading.Event().wait()\n"
+            "threading.Thread(target=drift_live, daemon=True).start()\n"
+            "ev.wait()\n",
+        )
+        self.assertNotEqual(live, child)
+        with tempfile.TemporaryDirectory() as temporary:
+            result = run_marked_process(
+                [sys.executable, "-u", "-c", live],
+                ready_input="start\n",
+                target_input=TARGET_NONCE_PLACEHOLDER + "\n",
+                final_input="finish\n",
+                ready_marker="READY",
+                target_marker="TARGET",
+                timeout=5.0,
+                cwd=Path(temporary),
+                cpu=cpu,
+            )
+        self.assertFalse(result["success"])
+        self.assertIn("thread", result["error"])
+        self.assertIn("CPU affinity", result["error"])
+
+
 class SupervisorHousekeepingCpuTests(unittest.TestCase):
     """Unit coverage for the fallback tiers, independent of host topology."""
 

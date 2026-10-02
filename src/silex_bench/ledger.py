@@ -978,9 +978,7 @@ class RunLedger:
             internal = observation.get("internal_timing")
             internal = internal if isinstance(internal, dict) else {}
             target_wall_ns = observation.get("target_wall_ns")
-            target_cpu_ms = internal.get(
-                "marked_target_cpu_ms", internal.get("target_cpu_ms")
-            )
+            target_cpu_ms = internal.get("target_cpu_ms")
             target_cpu_ns = (
                 int(round(float(target_cpu_ms) * 1_000_000))
                 if isinstance(target_cpu_ms, (int, float))
