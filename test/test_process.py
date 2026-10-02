@@ -2167,10 +2167,10 @@ sys.stdin.readline()
             proc.stdin.close() if proc.stdin else None
             proc.wait(timeout=10)
         assert start is not None and end is not None
-        # Two workers each burned about 0.6 s of CPU in total, and exited
-        # threads remain counted; allow for tick granularity and the
-        # worker head start before "UP".
-        self.assertGreater(end - start, 400_000_000)
+        # The GIL serializes the two workers, so the group burns about 0.6 s
+        # in total, and exited threads remain counted; allow for tick
+        # granularity and the worker head start before "UP".
+        self.assertGreater(end - start, 300_000_000)
         self.assertGreater(end, leader * 5)
 
     def test_cpu_runtime_of_missing_process_is_none(self) -> None:
@@ -2187,11 +2187,15 @@ sys.stdin.readline()
         cpu, other = cpus[0], cpus[1]
         child = f"""
 import os, sys, threading
+import time
 def drift():
     os.sched_setaffinity(0, {{{other}}})
 t = threading.Thread(target=drift)
 t.start()
 t.join()
+# join() returns before the kernel task is gone; wait until it is.
+while len(os.listdir("/proc/self/task")) > 1:
+    time.sleep(0.001)
 t2 = threading.Event()
 threading.Thread(target=t2.wait, daemon=True).start()
 sys.stdin.readline()
@@ -2203,7 +2207,10 @@ sys.stdin.readline()
         # The drifting thread has exited by readiness, so it must not fail
         # the sample; a live drifted thread must.
         live = child.replace(
-            "t = threading.Thread(target=drift)\nt.start()\nt.join()\n",
+            "t = threading.Thread(target=drift)\nt.start()\nt.join()\n"
+            "# join() returns before the kernel task is gone; wait until it is.\n"
+            "while len(os.listdir(\"/proc/self/task\")) > 1:\n"
+            "    time.sleep(0.001)\n",
             "ev = threading.Event()\n"
             "def drift_live():\n"
             f"    os.sched_setaffinity(0, {{{other}}})\n"
@@ -2228,6 +2235,19 @@ sys.stdin.readline()
         self.assertFalse(result["success"])
         self.assertIn("thread", result["error"])
         self.assertIn("CPU affinity", result["error"])
+        with tempfile.TemporaryDirectory() as temporary:
+            exited = run_marked_process(
+                [sys.executable, "-u", "-c", child],
+                ready_input="start\n",
+                target_input=TARGET_NONCE_PLACEHOLDER + "\n",
+                final_input="finish\n",
+                ready_marker="READY",
+                target_marker="TARGET",
+                timeout=5.0,
+                cwd=Path(temporary),
+                cpu=cpu,
+            )
+        self.assertTrue(exited["success"], exited.get("error"))
 
 
 class SupervisorHousekeepingCpuTests(unittest.TestCase):
