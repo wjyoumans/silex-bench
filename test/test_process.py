@@ -1345,6 +1345,59 @@ sys.stdin.readline()
         self.assertEqual(result["effective_affinity_after_target"], [other_cpu])
         self.assertNotIn("target_wall_ms", result)
 
+    def test_marked_process_fails_when_post_target_affinity_read_errors(self) -> None:
+        # The readiness read succeeds, then the post-target sched_getaffinity
+        # of the target raises OSError: the sample must fail (not succeed
+        # with an unverified affinity) and must not be classified a timeout.
+        if not hasattr(os, "sched_getaffinity"):
+            self.skipTest("sched_getaffinity is unavailable")
+        if shutil.which("taskset") is None:
+            self.skipTest("taskset is unavailable")
+        cpu = min(os.sched_getaffinity(0))
+        target_reads = [0]
+
+        class FailingOs:
+            def __getattr__(self, name: str) -> Any:
+                return getattr(os, name)
+
+            def sched_getaffinity(self, pid: int) -> Any:
+                if pid != 0:
+                    target_reads[0] += 1
+                    if target_reads[0] >= 2:
+                        raise OSError("simulated affinity read failure")
+                return os.sched_getaffinity(pid)
+
+        child = """
+import sys
+sys.stdin.readline()
+print("READY", flush=True)
+nonce = sys.stdin.readline().strip()
+print("TARGET:" + nonce, flush=True)
+sys.stdin.readline()
+"""
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.object(
+            process_module, "os", FailingOs()
+        ):
+            result = run_marked_process(
+                [sys.executable, "-u", "-c", child],
+                ready_input="start\n",
+                target_input=TARGET_NONCE_PLACEHOLDER + "\n",
+                final_input="finish\n",
+                ready_marker="READY",
+                target_marker="TARGET",
+                timeout=5.0,
+                cwd=Path(temporary),
+                cpu=cpu,
+            )
+
+        self.assertEqual(target_reads[0], 2)
+        self.assertFalse(result["success"])
+        self.assertFalse(result["timeout"])
+        self.assertIn("after the target marker", result["error"])
+        self.assertIn("simulated affinity read failure", result["error"])
+        self.assertEqual(result["effective_affinity"], [cpu])
+        self.assertIsNone(result["effective_affinity_after_target"])
+
     def test_marked_process_keeps_an_unchanged_affinity_after_target(self) -> None:
         # Counterpart to the affinity-drift failure above: a target that
         # stays on its requested CPU passes the post-target re-check.
@@ -1621,6 +1674,55 @@ time.sleep(2)
         self.assertEqual(result["returncode"], 3)
         self.assertEqual(result["stdout"], "out\n")
         self.assertEqual(result["failure_origin"], "target")
+
+    def test_process_deadline_passing_before_communicate_still_observes_exit(
+        self,
+    ) -> None:
+        # The deadline passes between the supervisor handshake and
+        # communicate. The remaining budget is clamped to zero (not
+        # negative), so the harness still makes one non-blocking observation
+        # and returns a classified row (success if the target had already
+        # finished, otherwise a timeout) instead of raising.
+        real_popen = process_module._supervised_popen
+        jumped = [0.0]
+
+        def popen_then_expire(*args: Any, **kwargs: Any) -> Any:
+            returned = real_popen(*args, **kwargs)
+            jumped[0] = 1000.0
+            return returned
+
+        class JumpingTime:
+            def __getattr__(self, name: str) -> Any:
+                return getattr(time, name)
+
+            def monotonic(self) -> float:
+                return time.monotonic() + jumped[0]
+
+        real_communicate = process_module._bounded_communicate
+        budgets: list[float] = []
+
+        def recording_communicate(*args: Any, **kwargs: Any) -> Any:
+            budgets.append(args[2])
+            return real_communicate(*args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.object(
+            process_module, "_supervised_popen", popen_then_expire
+        ), mock.patch.object(
+            process_module, "_bounded_communicate", recording_communicate
+        ), mock.patch.object(process_module, "time", JumpingTime()):
+            result = run_process(
+                [sys.executable, "-c", "print('out')"],
+                timeout=30.0,
+                cwd=Path(temporary),
+            )
+        self.assertEqual(jumped[0], 1000.0)
+        self.assertEqual(budgets, [0.0])
+        self.assertTrue(result["timeout"] or result["success"], result)
+        self.assertIs(result["success"], not result["timeout"])
+        if result["timeout"]:
+            self.assertEqual(result["error"], "process timed out")
+        else:
+            self.assertEqual(result["stdout"], "out\n")
 
     def test_marked_exit_noticed_after_the_deadline_is_not_a_timeout(self) -> None:
         # A marked target that exits early, noticed only after the deadline,
