@@ -28,7 +28,7 @@ from .ledger import (
 
 
 BOOTSTRAP_SAMPLES = 2_000
-REPORT_RENDERER_VERSION = 2
+REPORT_RENDERER_VERSION = 3
 CONDITIONAL_WORKLOAD = "class_unit_grh"
 _EXPECTED_TIMING_SCOPES = {
     "class_unit_proven": "class_and_unit_group_only",
@@ -95,6 +95,17 @@ def _observation_status(observation: dict[str, Any]) -> str:
     if status == "ok" and observation.get("validation", {}).get("success") is not True:
         return "invalid"
     return status
+
+
+def _case_key_workload(case_key: Any) -> str:
+    return str(case_key).partition(":")[0] if case_key else ""
+
+
+def _observation_workload(observation: Mapping[str, Any]) -> str:
+    workload = observation.get("workload")
+    if isinstance(workload, str) and workload:
+        return workload
+    return _case_key_workload(observation.get("case_key"))
 
 
 def _agreement_status(agreement: dict[str, Any]) -> str:
@@ -277,13 +288,16 @@ def _summary(snapshot: dict[str, Any]) -> dict[str, Any]:
     timing_groups: dict[
         tuple[str, str, str, str, str, str], list[float]
     ] = defaultdict(list)
-    status_counts: dict[str, int] = defaultdict(int)
-    backend_status: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    status_counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    backend_status: dict[tuple[str, str], dict[str, int]] = defaultdict(
+        lambda: defaultdict(int)
+    )
     failures: list[dict[str, Any]] = []
     for observation in snapshot["observations"]:
         effective_status = _observation_status(observation)
-        status_counts[effective_status] += 1
-        backend_status[str(observation["backend"])][effective_status] += 1
+        workload = _observation_workload(observation)
+        status_counts[workload][effective_status] += 1
+        backend_status[(workload, str(observation["backend"]))][effective_status] += 1
         if effective_status not in {"ok", "unsupported"}:
             failures.append(
                 {
@@ -374,12 +388,16 @@ def _summary(snapshot: dict[str, Any]) -> dict[str, Any]:
                 ),
             }
         )
-    agreement_status: dict[tuple[str, str], dict[str, int]] = defaultdict(
+    agreement_status: dict[tuple[str, str, str], dict[str, int]] = defaultdict(
         lambda: defaultdict(int)
     )
     for agreement in snapshot["agreements"]:
         agreement_status[
-            (str(agreement["lhs_backend"]), str(agreement["rhs_backend"]))
+            (
+                _case_key_workload(agreement.get("case_key")),
+                str(agreement["lhs_backend"]),
+                str(agreement["rhs_backend"]),
+            )
         ][_agreement_status(agreement)] += 1
     return {
         "schema_version": CAMPAIGN_SCHEMA_VERSION,
@@ -393,14 +411,24 @@ def _summary(snapshot: dict[str, Any]) -> dict[str, Any]:
             "ordinary workloads; harness whole-process monotonic clock for integrated "
             "S-unit workloads; timing_scope and wall_clock declared per row)"
         ),
-        "status_counts": dict(sorted(status_counts.items())),
+        "status_counts": {
+            workload: dict(sorted(counts.items()))
+            for workload, counts in sorted(status_counts.items())
+        },
         "backend_status": [
-            {"backend": backend, **dict(sorted(counts.items()))}
-            for backend, counts in sorted(backend_status.items())
+            {"workload": workload, "backend": backend, **dict(sorted(counts.items()))}
+            for (workload, backend), counts in sorted(backend_status.items())
         ],
         "agreement_status": [
-            {"candidate": candidate, "baseline": baseline, **dict(sorted(counts.items()))}
-            for (candidate, baseline), counts in sorted(agreement_status.items())
+            {
+                "workload": workload,
+                "candidate": candidate,
+                "baseline": baseline,
+                **dict(sorted(counts.items())),
+            }
+            for (workload, candidate, baseline), counts in sorted(
+                agreement_status.items()
+            )
         ],
         "timing_sample_status": [
             {"backend": backend, "variant": variant, **dict(sorted(counts.items()))}
@@ -838,13 +866,13 @@ def _markdown(
             "",
             "## Observation status",
             "",
-            "| Adapter | OK | Unsupported | Unavailable | Timeout | Error | Invalid |",
-            "|---|---:|---:|---:|---:|---:|---:|",
+            "| Workload | Adapter | OK | Unsupported | Unavailable | Timeout | Error | Invalid |",
+            "|---|---|---:|---:|---:|---:|---:|---:|",
         ]
     )
     for row in summary["backend_status"]:
         lines.append(
-            f"| {row['backend']} | {row.get('ok', 0)} | {row.get('unsupported', 0)} | "
+            f"| {row.get('workload', '-')} | {row['backend']} | {row.get('ok', 0)} | {row.get('unsupported', 0)} | "
             f"{row.get('unavailable', 0)} | {row.get('timeout', 0)} | "
             f"{row.get('error', 0)} | {row.get('invalid', 0)} |"
         )
@@ -853,13 +881,13 @@ def _markdown(
             "",
             "## Pairwise agreement",
             "",
-            "| Candidate | Baseline | Agree | Disagree | Unavailable | Unsupported | Invalid | Incomplete |",
-            "|---|---|---:|---:|---:|---:|---:|---:|",
+            "| Workload | Candidate | Baseline | Agree | Disagree | Unavailable | Unsupported | Invalid | Incomplete |",
+            "|---|---|---|---:|---:|---:|---:|---:|---:|",
         ]
     )
     for row in summary["agreement_status"]:
         lines.append(
-            f"| {row['candidate']} | {row['baseline']} | {row.get('agree', 0)} | "
+            f"| {row.get('workload', '-')} | {row['candidate']} | {row['baseline']} | {row.get('agree', 0)} | "
             f"{row.get('disagree', 0)} | {row.get('unavailable', 0)} | "
             f"{row.get('unsupported', 0)} | {row.get('invalid', 0)} | "
             f"{row.get('incomplete', 0)} |"

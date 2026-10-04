@@ -432,6 +432,85 @@ class GrhReportTests(unittest.TestCase):
             "class_and_unit_group_only",
         )
 
+    def test_summary_status_rows_and_counts_are_split_per_workload(self) -> None:
+        def observation(workload: str, status: str = "ok") -> dict[str, object]:
+            return {
+                "case_key": f"{workload}:quartic",
+                "workload": workload,
+                "backend": "pari",
+                "repetition": 0,
+                "status": status,
+                "validation": {"success": status == "ok", "errors": []},
+            }
+
+        def agreement(workload: str, status: str) -> dict[str, object]:
+            return {
+                "case_key": f"{workload}:quartic",
+                "lhs_backend": "silex",
+                "rhs_backend": "pari",
+                "repetition": 0,
+                "success": status == "agree",
+                "status": status,
+            }
+
+        snapshot = {
+            "fingerprint": "fp",
+            "state": "complete",
+            "manifest": {"plan": {"mode": "performance"}},
+            "cases": [],
+            "engines": [],
+            "observations": [
+                observation("class_unit_proven"),
+                observation("class_unit_grh"),
+                observation("class_unit_grh", "error"),
+            ],
+            "timing_samples": [],
+            "agreements": [
+                agreement("class_unit_proven", "agree"),
+                agreement("class_unit_grh", "disagree"),
+            ],
+        }
+        summary = reporting._summary(snapshot)
+        self.assertEqual(
+            summary["status_counts"],
+            {
+                "class_unit_grh": {"error": 1, "ok": 1},
+                "class_unit_proven": {"ok": 1},
+            },
+        )
+        self.assertEqual(
+            [(r["workload"], r["backend"], r.get("ok", 0), r.get("error", 0))
+             for r in summary["backend_status"]],
+            [("class_unit_grh", "pari", 1, 1), ("class_unit_proven", "pari", 1, 0)],
+        )
+        self.assertEqual(
+            [(r["workload"], r.get("agree", 0), r.get("disagree", 0))
+             for r in summary["agreement_status"]],
+            [("class_unit_grh", 0, 1), ("class_unit_proven", 1, 0)],
+        )
+        text = reporting._markdown(
+            {
+                "state": "complete",
+                "fingerprint": "fp",
+                "manifest": {
+                    "machine": {
+                        "requested_cpu": 2,
+                        "cpu_model": "cpu",
+                        "platform": "Linux",
+                        "architecture": "x86_64",
+                    },
+                    "plan": {"suite": "number-field", "execution": {"threads": 1}},
+                },
+            },
+            summary,
+            [],
+            {"generated": False, "reason": "none"},
+        )
+        self.assertIn("| class_unit_grh | pari | 1 | 0 | 0 | 0 | 1 | 0 |", text)
+        self.assertIn("| class_unit_proven | pari | 1 | 0 | 0 | 0 | 0 | 0 |", text)
+        self.assertIn("| class_unit_grh | silex | pari | 0 | 1 |", text)
+        self.assertEqual(reporting.REPORT_RENDERER_VERSION, 3)
+
 
 if __name__ == "__main__":
     unittest.main()

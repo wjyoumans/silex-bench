@@ -106,7 +106,10 @@ timing rows and report section are scoped by the workload id, so a grh
 observation is never pooled with a proven one. The shared expected values on a
 corpus row come from proven routes and remain the oracle for both workloads; a
 grh result that differs from them fails validation and is never a timing
-sample. Each engine's conditional route:
+sample. The report summary keeps the populations apart as well: each
+`backend_status` and `agreement_status` row has a `workload` field, and
+`status_counts` maps each workload id to its own status counts (report renderer
+version 3). Each engine's conditional route:
 
 - **Silex** runs `silex-class-unit-instance --mode grh`. The echoed `mode`
   must be `grh`, which rejects binaries that predate grh mode. The final result

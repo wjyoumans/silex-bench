@@ -45,7 +45,9 @@ developed with Anthropic Claude, under human direction and review.
   without `bnfcertify`, Hecke `GRH=true` and Magma `Proof := "GRH"`. Its rows
   are labelled `grh`, stay apart from proven rows in ledgers and reports, and
   are outside the default suite and the publication profile. Corpus rows opt
-  in through a `grh` object, and corpus rows with a `mode` other than `proven`
+  in through a `grh` object, the report summary's `backend_status` and
+  `agreement_status` rows carry a `workload` field, `status_counts` is split per
+  workload (report renderer version 3), and corpus rows with a `mode` other than `proven`
   are rejected.
 - The publication profile uses three repetitions across the expanded
   default field slice and a 60-second observation ceiling. Hecke S-unit

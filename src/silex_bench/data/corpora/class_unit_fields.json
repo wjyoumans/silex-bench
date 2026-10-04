@@ -18,7 +18,7 @@
       "optimization_external_engines": ["pari", "hecke", "magma"],
       "timeout_seconds": 10,
       "expected_success": true,
-      "grh": {"expected_success": true, "source": "GRH coverage survey of 2026-10: Silex grh mode succeeds with grh labels and agrees with PARI 2.17.3 bnfinit (no bnfcertify) and Hecke 0.39.19 class_group (GRH=true) on class order, invariants and unit rank; a conditional-route observation, not a proof"},
+      "grh": {"expected_success": true, "source": "Single-run survey observation, 2026-10 grh-coverage survey (Silex grh transaction timings, loaded host): Silex grh succeeded in 95 ms with h=1, unit rank 1 and grh labels (grh bound 128, Minkowski-type bound 2); agrees with PARI 2.17.3 bnfinit (no bnfcertify) and Hecke 0.39.19 class_group (GRH=true) on class order and invariants; a conditional-route observation, not a proof"},
       "status": "comparison_candidate",
       "benchmark_role": "core",
       "source": "Existing real-quadratic class/unit benchmark field; polynomial discriminant 20, maximal-order discriminant 5; strict Silex, PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and Magma 2.28-27 full-proof routes agree; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.00163 s"
@@ -37,7 +37,7 @@
       "optimization_external_engines": ["pari", "hecke", "magma"],
       "timeout_seconds": 30,
       "expected_success": true,
-      "grh": {"expected_success": true, "source": "GRH coverage survey of 2026-10: Silex grh mode succeeds with grh labels and agrees with PARI 2.17.3 bnfinit (no bnfcertify) and Hecke 0.39.19 class_group (GRH=true) on class order, invariants and unit rank; a conditional-route observation, not a proof"},
+      "grh": {"expected_success": true, "source": "Single-run survey observation, 2026-10 grh-coverage survey (Silex grh transaction timings, loaded host): Silex grh succeeded in 26 ms with h=4 [2,2], unit rank 1 and grh labels (grh bound 100, Minkowski-type bound 14); agrees with PARI 2.17.3 bnfinit (no bnfcertify) and Hecke 0.39.19 class_group (GRH=true) on class order and invariants; a conditional-route observation, not a proof"},
       "status": "comparison_candidate",
       "source": "Release correctness regression for the conservative public index-bound boundary and the source-complete real-quadratic relation-table route; 2026-08-06 default Silex proven transaction, PARI full certification, default-environment Hecke GRH=false, and Magma full-proof routes agree; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.00275 s"
     },
@@ -71,7 +71,7 @@
       "optimization_external_engines": ["pari", "hecke", "magma"],
       "timeout_seconds": 10,
       "expected_success": true,
-      "grh": {"expected_success": true, "source": "GRH coverage survey of 2026-10: Silex grh mode succeeds with grh labels and agrees with PARI 2.17.3 bnfinit (no bnfcertify) and Hecke 0.39.19 class_group (GRH=true) on class order, invariants and unit rank; a conditional-route observation, not a proof"},
+      "grh": {"expected_success": true, "source": "Single-run survey observation, 2026-10 grh-coverage survey (Silex grh transaction timings, loaded host): Silex grh row imaginary_quadratic_47_grh succeeded in 18 ms with h=5 [5], unit rank 0 and grh labels (grh bound 100, Minkowski-type bound 3); agrees with PARI 2.17.3 bnfinit (no bnfcertify) and Hecke 0.39.19 class_group (GRH=true) on class order and invariants; a conditional-route observation, not a proof"},
       "status": "comparison_candidate",
       "benchmark_role": "core",
       "source": "Existing imaginary-quadratic class/unit benchmark field; polynomial discriminant -188, maximal-order discriminant -47; strict Silex, PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and Magma 2.28-27 full-proof routes agree; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.00109 s"

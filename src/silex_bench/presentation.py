@@ -269,9 +269,10 @@ def render_campaign(payload: Mapping[str, Any]) -> str:
                 "",
                 "Observations",
                 table(
-                    ("Adapter", "OK", "Unsupported", "Unavailable", "Timeout", "Error", "Invalid"),
+                    ("Workload", "Adapter", "OK", "Unsupported", "Unavailable", "Timeout", "Error", "Invalid"),
                     (
                         (
+                            row.get("workload", "-"),
                             row.get("backend"),
                             row.get("ok", 0),
                             row.get("unsupported", 0),
@@ -292,9 +293,10 @@ def render_campaign(payload: Mapping[str, Any]) -> str:
                 "",
                 "Agreements",
                 table(
-                    ("Candidate", "Baseline", "Agree", "Disagree", "Unavailable", "Unsupported", "Invalid", "Incomplete"),
+                    ("Workload", "Candidate", "Baseline", "Agree", "Disagree", "Unavailable", "Unsupported", "Invalid", "Incomplete"),
                     (
                         (
+                            row.get("workload", "-"),
                             row.get("candidate"),
                             row.get("baseline"),
                             row.get("agree", 0),

@@ -127,7 +127,7 @@ class PresentationTests(unittest.TestCase):
             {
                 "state": "complete",
                 "run_dir": "/tmp/run",
-                "backend_status": [{"backend": "silex", "ok": 1}],
+                "backend_status": [{"workload": "class_unit_grh", "backend": "silex", "ok": 1}],
                 "agreement_status": [
                     {"candidate": "silex", "baseline": "pari", "agree": 1}
                 ],
@@ -149,6 +149,8 @@ class PresentationTests(unittest.TestCase):
             }
         )
         self.assertIn("Campaign state: complete", text)
+        self.assertIn("class_unit_grh", text)
+        self.assertIn("Workload", text)
         self.assertNotIn("speedup", text.lower())
         self.assertNotIn("2.000x", text)
         self.assertIn("/tmp/report.md", text)

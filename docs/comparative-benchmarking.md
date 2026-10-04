@@ -67,7 +67,11 @@ The opt-in `class_unit_grh` workload runs each engine's GRH-conditional
 route (see the [backend contracts](backend-contracts.md)); select it with
 `--workload class_unit_grh`. Its rows are labelled `grh`, stay separate from
 `class_unit_proven` rows in ledgers and reports, and are never compared with
-proven timings.
+proven timings. The report summary carries a `workload` field on every
+`backend_status` and `agreement_status` row and splits `status_counts` per
+workload, so a grh run and a proven run of the same engine land in separate
+rows and counts; the markdown observation and agreement tables show a
+Workload column.
 
 `plan` resolves selection, capabilities, required pairs, and execution limits
 without starting engines. `doctor` probes availability and provenance; its
