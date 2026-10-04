@@ -29,8 +29,10 @@ from .ledger import (
 
 BOOTSTRAP_SAMPLES = 2_000
 REPORT_RENDERER_VERSION = 2
+CONDITIONAL_WORKLOAD = "class_unit_grh"
 _EXPECTED_TIMING_SCOPES = {
     "class_unit_proven": "class_and_unit_group_only",
+    "class_unit_grh": "class_and_unit_group_only",
     "maximal_order": "maximal_order_only",
     "ideal_multiply": "ideal_multiplication_only",
     "element_square_root": "number_field_element_is_square_only",
@@ -881,27 +883,49 @@ def _markdown(
         lines.extend(["", "## Publication blockers", ""])
         lines.extend(f"- {error}" for error in publication_errors)
         lines.append("")
-    lines.extend(
-        [
-            "",
-            "## Per-case timings",
-            "",
-            "| Workload | Case | Backend | Sample | Scope | Wall clock | n | Median ms | MAD ms | 95% bootstrap interval |",
-            "|---|---|---|---|---|---|---:|---:|---:|---:|",
-        ]
-    )
-    for row in summary["timings"]:
+    header = [
+        "| Workload | Case | Backend | Sample | Scope | Wall clock | n | Median ms | MAD ms | 95% bootstrap interval |",
+        "|---|---|---|---|---|---|---:|---:|---:|---:|",
+    ]
+
+    def _timing_line(row: dict[str, Any]) -> str:
         stats = row["statistics"]
         interval = (
             "exploratory"
             if stats["bootstrap_95_low"] is None
             else f"[{stats['bootstrap_95_low']:.3f}, {stats['bootstrap_95_high']:.3f}]"
         )
-        lines.append(
+        return (
             f"| {row['workload']} | {row['case_id']} | {row['backend']} | "
             f"{row['variant']} | {row['timing_scope']} | {row['wall_clock']} | "
             f"{stats['count']} | {stats['median']:.3f} | {stats['mad']:.3f} | {interval} |"
         )
+
+    # GRH-conditional timings never share a table with proven or other rows:
+    # a conditional route is not comparable with an unconditional one.
+    ordinary_timings = [
+        row for row in summary["timings"] if row["workload"] != CONDITIONAL_WORKLOAD
+    ]
+    conditional_timings = [
+        row for row in summary["timings"] if row["workload"] == CONDITIONAL_WORKLOAD
+    ]
+    lines.extend(["", "## Per-case timings", "", *header])
+    lines.extend(_timing_line(row) for row in ordinary_timings)
+    if conditional_timings:
+        lines.extend(
+            [
+                "",
+                "## GRH-conditional per-case timings",
+                "",
+                "GRH-conditional (requested assumption: GRH). These rows ran each "
+                "engine's conditional route and carry grh labels, not proofs. "
+                "Agreement among them is consistency evidence, not proof, and "
+                "they are not comparable with the proven rows above.",
+                "",
+                *header,
+            ]
+        )
+        lines.extend(_timing_line(row) for row in conditional_timings)
     lines.extend(["", "## Plots", ""])
     if plots.get("generated") is True:
         lines.extend(f"- `{path}`" for path in plots.get("files", []))
@@ -1026,7 +1050,11 @@ def _plots(directory: Path, summary: dict[str, Any]) -> dict[str, Any]:
                 axis.set_yscale("log")
                 axis.set_xlabel(axis_label)
                 axis.set_ylabel("target wall time (ms; see row scope)")
-                axis.set_title(workload)
+                axis.set_title(
+                    f"{workload} (GRH-conditional)"
+                    if workload == CONDITIONAL_WORKLOAD
+                    else workload
+                )
                 axis.legend()
                 figure.tight_layout()
                 name = f"runtime-{workload}-by-{file_axis}.svg"

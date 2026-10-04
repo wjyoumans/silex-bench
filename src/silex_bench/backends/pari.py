@@ -293,10 +293,13 @@ def _parse_invariants(value: str | None) -> list[str] | None:
         return None
 
 
+_CLASS_UNIT_OPERATIONS = ("class_unit_proven", "class_unit_grh")
+
+
 def _programs(request: SampleRequest) -> tuple[str, str, str]:
     polynomial = polynomial_expr(request.field.coefficients_low_to_high)
     setup = ""
-    if request.operation == "class_unit_proven":
+    if request.operation in _CLASS_UNIT_OPERATIONS:
         setup = f"""
 P = {polynomial};
 nf = nfinit(P);
@@ -326,6 +329,36 @@ setrand({request.seed});
 {setup}
 print("{_READY_MARKER}");
 """
+
+    if request.operation == "class_unit_grh":
+        # Conditional route: bnfinit(nf, 1) only, the same call and flag as the
+        # first timed component of the proven route; no bnfcertify.  PARI's
+        # bnfinit results are conditional on the GRH (usersch3.tex, bnfinit).
+        target = f"""
+target_cpu_start_ms = getabstime();
+target_wall_start_ms = getwalltime();
+gettime();
+b = bnfinit(nf, 1);
+bnfinit_ms = gettime();
+target_internal_cpu_ms = getabstime() - target_cpu_start_ms;
+target_internal_wall_ms = getwalltime() - target_wall_start_ms;
+print("{_TARGET_MARKER}:{TARGET_NONCE_PLACEHOLDER}");
+"""
+        final = """
+print("target_internal_cpu_ms=", target_internal_cpu_ms);
+print("target_internal_wall_ms=", target_internal_wall_ms);
+print("component_bnfinit_ms=", bnfinit_ms);
+print("class_order=", b.no);
+print("class_invariants=", b.cyc);
+print("fundamental_unit_count=", #b.fu);
+print("polynomial_discriminant=", poldisc(P));
+print("maximal_order_discriminant=", b.disc);
+print("signature_r1=", b.r1);
+print("signature_r2=", b.r2);
+print("reported_threads=", benchmark_reported_threads);
+quit
+"""
+        return ready, target, final
 
     if request.operation == "class_unit_proven":
         target = f"""
@@ -432,7 +465,7 @@ quit
 
 
 def _result(request: SampleRequest, values: dict[str, str]) -> dict[str, Any]:
-    if request.operation == "class_unit_proven":
+    if request.operation in _CLASS_UNIT_OPERATIONS:
         r1 = parse_int(values, "signature_r1")
         r2 = parse_int(values, "signature_r2")
         return {
@@ -466,6 +499,8 @@ def _result(request: SampleRequest, values: dict[str, str]) -> dict[str, Any]:
 
 
 def _components(request: SampleRequest, values: dict[str, str]) -> dict[str, Any]:
+    if request.operation == "class_unit_grh":
+        return {"bnfinit": parse_float(values, "component_bnfinit_ms")}
     if request.operation == "class_unit_proven":
         return {
             "bnfinit": parse_float(values, "component_bnfinit_ms"),
@@ -484,9 +519,10 @@ def _components(request: SampleRequest, values: dict[str, str]) -> dict[str, Any
 
 
 def _complete(request: SampleRequest, result: dict[str, Any], certified: bool) -> bool:
-    if request.operation == "class_unit_proven":
+    if request.operation in _CLASS_UNIT_OPERATIONS:
+        # The conditional route has no certification step to require.
         return (
-            certified
+            (certified or request.operation == "class_unit_grh")
             and result.get("class_order") is not None
             and result.get("class_invariants") is not None
             and result.get("unit_rank") is not None
@@ -636,7 +672,7 @@ class PariBackend(BackendAdapter):
         process_success = process_state_is_valid(process) and process["success"]
         unit_error = (
             unit_count_error("PARI", result)
-            if request.operation == "class_unit_proven"
+            if request.operation in _CLASS_UNIT_OPERATIONS
             else None
         )
         # bnfcertify proves the whole bnf structure at once, so a returned
@@ -657,7 +693,23 @@ class PariBackend(BackendAdapter):
             "source": _THREAD_COUNT_SOURCE,
         }
         success = result_complete and thread_count["matches_requested"]
-        if request.operation == "class_unit_proven":
+        if request.operation == "class_unit_grh":
+            # No unconditional proof ran: labels are grh on PARI's documented
+            # contract (bnfinit is conditional on the GRH), proof_complete is
+            # false, and conditional_result_complete records that the unit
+            # count was read back and every field is present.  Bench does not
+            # verify the rigor of PARI's double-precision completeness check.
+            grh_label = "grh" if result_complete else "unknown"
+            proof = {
+                "certification_status": grh_label,
+                "class_group_proof_status": grh_label,
+                "unit_group_proof_status": grh_label,
+                "regulator_proof_status": grh_label,
+                "proof_complete": False,
+                "conditional_result_complete": result_complete,
+                "final_result_published": result_complete,
+            }
+        elif request.operation == "class_unit_proven":
             # `certified_effective` already folds in `unit_error is None`, so
             # reuse it here instead of re-deriving that condition.
             if certified_effective:
@@ -705,6 +757,7 @@ class PariBackend(BackendAdapter):
             "component_clock": "pari_gettime_ms",
             "scope": {
                 "class_unit_proven": "class_and_unit_group_only",
+                "class_unit_grh": "class_and_unit_group_only",
                 "maximal_order": "maximal_order_only",
                 "ideal_multiply": "ideal_multiplication_only",
                 "element_square_root": "number_field_element_is_square_only",

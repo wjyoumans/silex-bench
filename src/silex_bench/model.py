@@ -17,6 +17,7 @@ BACKENDS = ("silex", "pari", "hecke", "magma")
 EXTERNAL_BACKENDS = ("pari", "hecke", "magma")
 OPERATIONS = (
     "class_unit_proven",
+    "class_unit_grh",
     "maximal_order",
     "ideal_multiply",
     "element_square_root",
@@ -396,7 +397,7 @@ def silex_executable_keys(
     operations = set(selected_operations)
     if not operations:
         return ("class_unit_executable", "operation_executable")
-    class_unit_operations = {"class_unit_proven", "sunit_proven"}
+    class_unit_operations = {"class_unit_proven", "class_unit_grh", "sunit_proven"}
     required: list[str] = []
     if operations & class_unit_operations:
         required.append("class_unit_executable")
@@ -885,7 +886,7 @@ def backend_result_contract_errors(
         return [f"unknown operation {operation!r}"]
 
     errors: list[str] = []
-    if operation == "class_unit_proven":
+    if operation in {"class_unit_proven", "class_unit_grh"}:
         class_order = integer_text_value(result.get("class_order"))
         if class_order is None or class_order < 1:
             errors.append("backend.result.class_order must be a positive integer string")

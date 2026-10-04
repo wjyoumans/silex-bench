@@ -39,8 +39,11 @@ _READY_MARKER = "__SILEX_BENCH_SILEX_READY__"
 _TARGET_MARKER = "__SILEX_BENCH_SILEX_TARGET_DONE__"
 _REQUESTED_THREADS = 1
 _THREAD_COUNT_SOURCE = "silex_flint_get_num_threads"
+_CLASS_UNIT_MODES = {"class_unit_proven": "proven", "class_unit_grh": "grh"}
+_CLASS_UNIT_OPERATIONS = tuple(_CLASS_UNIT_MODES)
 _TIMING_SCOPES = {
     "class_unit_proven": "class_and_unit_group_only",
+    "class_unit_grh": "class_and_unit_group_only",
     "maximal_order": "maximal_order_only",
     "ideal_multiply": "ideal_multiplication_only",
     "element_square_root": "number_field_element_is_square_only",
@@ -129,7 +132,7 @@ def _native_failure_payload(
     if type(failure_stage) is not str or not failure_stage.strip():
         failure_stage = "native_execution"
 
-    if operation == "class_unit_proven":
+    if operation in _CLASS_UNIT_OPERATIONS:
         native_timing = payload.get("measurement_timing")
         native_timing = native_timing if isinstance(native_timing, dict) else {}
         timing = {
@@ -349,7 +352,7 @@ class SilexBackend(BackendAdapter):
             payload["engine_identity"] = probe.get("engine_identity")
             payload["cmd"] = None
             return payload
-        if request.operation == "class_unit_proven":
+        if request.operation in _CLASS_UNIT_OPERATIONS:
             return self._run_class_unit(request, context, probe["engine_identity"])
         return self._run_operation(request, context, probe["engine_identity"])
 
@@ -366,7 +369,7 @@ class SilexBackend(BackendAdapter):
             "--coeffs",
             coeffs_arg(request.field.coefficients_low_to_high),
             "--mode",
-            "proven",
+            _CLASS_UNIT_MODES[request.operation],
         ]
         process = run_marked_process(
             cmd,
@@ -465,13 +468,33 @@ class SilexBackend(BackendAdapter):
             "regulator_proof_status": payload.get("regulator_proof_status"),
             "final_result_published": published,
         }
-        proof_complete = (
-            proof["certification_status"] == "proven"
-            and proof["class_group_proof_status"] == "proven"
-            and proof["unit_group_proof_status"] == "proven"
-            and proof["regulator_proof_status"] == "verified"
-            and published
-        )
+        requested_mode = _CLASS_UNIT_MODES[request.operation]
+        if requested_mode == "grh":
+            # Conditional route: the native tool must echo the requested mode
+            # (rejects binaries that predate grh mode) and publish exactly grh
+            # labels.  The regulator state is recorded, never required.  No
+            # unconditional proof ran, so proof_complete stays false.
+            proof["mode"] = payload.get("mode")
+            conditional_ok = (
+                payload.get("mode") == "grh"
+                and proof["certification_status"] == "grh"
+                and proof["class_group_proof_status"] == "grh"
+                and proof["unit_group_proof_status"] == "grh"
+                and published
+            )
+            proof["proof_complete"] = False
+            proof["conditional_result_complete"] = (
+                conditional_ok and computation_complete
+            )
+            proof_complete = conditional_ok
+        else:
+            proof_complete = (
+                proof["certification_status"] == "proven"
+                and proof["class_group_proof_status"] == "proven"
+                and proof["unit_group_proof_status"] == "proven"
+                and proof["regulator_proof_status"] == "verified"
+                and published
+            )
         result_complete = computation_complete and proof_complete
         thread_count = _thread_count(payload)
         success = result_complete and thread_count["matches_requested"]
@@ -503,7 +526,18 @@ class SilexBackend(BackendAdapter):
                 (
                     "Silex proven-publication contract failed: expected proven "
                     "class/unit labels, a verified regulator, and published result"
-                    if computation_complete and not proof_complete
+                    if computation_complete
+                    and not proof_complete
+                    and requested_mode == "proven"
+                    else None
+                ),
+                (
+                    "Silex grh-publication contract failed: expected mode "
+                    f"echo 'grh' (got {payload.get('mode')!r}), grh class/unit "
+                    "labels, and published result"
+                    if computation_complete
+                    and not proof_complete
+                    and requested_mode == "grh"
                     else None
                 ),
                 (

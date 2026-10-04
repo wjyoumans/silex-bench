@@ -14,12 +14,15 @@ from .util import read_json_nofollow
 
 
 CLASS_UNIT = "class_unit_proven"
+CLASS_UNIT_GRH = "class_unit_grh"
+CLASS_UNIT_WORKLOADS = (CLASS_UNIT, CLASS_UNIT_GRH)
 MAXIMAL_ORDER = "maximal_order"
 IDEAL_MULTIPLY = "ideal_multiply"
 ELEMENT_SQUARE_ROOT = "element_square_root"
 SUNIT = "sunit_proven"
 NUMBER_FIELD_WORKLOADS = (
     CLASS_UNIT,
+    CLASS_UNIT_GRH,
     MAXIMAL_ORDER,
     IDEAL_MULTIPLY,
     ELEMENT_SQUARE_ROOT,
@@ -129,7 +132,7 @@ class NumberFieldContract(WorkloadContract):
         errors: list[str] = []
         checks: dict[str, bool] = {}
         degree = int(case.metrics["degree"])
-        if self.id == CLASS_UNIT:
+        if self.id in CLASS_UNIT_WORKLOADS:
             order = _integer_text(result.get("class_order"))
             invariants = _invariants(result.get("class_invariants"))
             rank = result.get("unit_rank")
@@ -176,19 +179,35 @@ class NumberFieldContract(WorkloadContract):
                     wanted = _invariants(wanted)
                 checks[f"expected_{key}"] = actual == wanted
             final = proof.get("final_result_published") is True
-            certification = proof.get("certification_status") == "proven"
-            class_proof = proof.get("class_group_proof_status") == "proven"
-            unit_proof = proof.get("unit_group_proof_status") == "proven"
-            regulator = proof.get("regulator_proof_status") in {"proven", "verified"}
-            checks.update(
-                {
-                    "final_result_published": final,
-                    "certification": certification,
-                    "class_group_proof": class_proof,
-                    "unit_group_proof": unit_proof,
-                    "regulator_proof": regulator,
-                }
-            )
+            if self.id == CLASS_UNIT_GRH:
+                # Conditional population: the overall label must be grh (never
+                # relabelled proven, even when a component such as a rank-zero
+                # unit group is proven); components may be grh or proven.
+                # The regulator state is recorded, never required.
+                checks.update(
+                    {
+                        "final_result_published": final,
+                        "certification": proof.get("certification_status") == "grh",
+                        "class_group_proof": proof.get("class_group_proof_status")
+                        in {"grh", "proven"},
+                        "unit_group_proof": proof.get("unit_group_proof_status")
+                        in {"grh", "proven"},
+                    }
+                )
+            else:
+                certification = proof.get("certification_status") == "proven"
+                class_proof = proof.get("class_group_proof_status") == "proven"
+                unit_proof = proof.get("unit_group_proof_status") == "proven"
+                regulator = proof.get("regulator_proof_status") in {"proven", "verified"}
+                checks.update(
+                    {
+                        "final_result_published": final,
+                        "certification": certification,
+                        "class_group_proof": class_proof,
+                        "unit_group_proof": unit_proof,
+                        "regulator_proof": regulator,
+                    }
+                )
         elif self.id == MAXIMAL_ORDER:
             value = _integer_text(result.get("maximal_order_discriminant"))
             checks["maximal_order_discriminant"] = value is not None
@@ -217,7 +236,7 @@ class NumberFieldContract(WorkloadContract):
         rhs_backend: str,
         rhs: Mapping[str, Any],
     ) -> AgreementResult:
-        if self.id == CLASS_UNIT:
+        if self.id in CLASS_UNIT_WORKLOADS:
             return _comparison(
                 lhs,
                 rhs,
@@ -334,6 +353,9 @@ def sunit_module() -> Any:
 def builtin_workloads() -> list[WorkloadContract]:
     return [
         NumberFieldContract(CLASS_UNIT, "Proven class and unit groups"),
+        NumberFieldContract(
+            CLASS_UNIT_GRH, "GRH-conditional class and unit groups"
+        ),
         NumberFieldContract(MAXIMAL_ORDER, "Maximal order"),
         NumberFieldContract(IDEAL_MULTIPLY, "Integral ideal multiplication"),
         NumberFieldContract(ELEMENT_SQUARE_ROOT, "Number-field element square root"),
@@ -426,6 +448,27 @@ def load_cases(corpora: Mapping[str, Path], workload_ids: tuple[str, ...]) -> li
             coefficients = row.get("coefficients_low_to_high")
             if not isinstance(identifier, str) or not isinstance(coefficients, list):
                 raise ValueError("number-field corpus row needs id and coefficients")
+            if "mode" in row and row["mode"] != "proven":
+                # The loader never reads this field; reject anything else so
+                # an edit cannot silently change nothing.  The conditional
+                # population is selected by the opt-in "grh" object instead.
+                raise ValueError(
+                    f"number-field corpus row {identifier} mode must be "
+                    f"'proven', got {row['mode']!r}"
+                )
+            grh = row.get("grh")
+            if grh is not None:
+                if (
+                    not isinstance(grh, dict)
+                    or type(grh.get("expected_success")) is not bool
+                    or not isinstance(grh.get("source"), str)
+                    or not grh["source"].strip()
+                ):
+                    raise ValueError(
+                        f"number-field corpus row {identifier} grh must be an "
+                        "object with boolean expected_success and a source"
+                    )
+                grh_timeout = grh.get("timeout_seconds", row.get("timeout_seconds"))
             metrics = _field_metrics(row)
             common_expected = {
                 key: row[value]
@@ -440,11 +483,25 @@ def load_cases(corpora: Mapping[str, Path], workload_ids: tuple[str, ...]) -> li
             for workload in workload_ids:
                 if workload not in NUMBER_FIELD_WORKLOADS:
                     continue
-                expected_success = row.get("expected_success", True) if workload == CLASS_UNIT else True
+                timeout_hint = row.get("timeout_seconds")
+                if workload == CLASS_UNIT_GRH:
+                    if grh is None:
+                        continue
+                    expected_success = grh["expected_success"]
+                    timeout_hint = grh_timeout
+                else:
+                    expected_success = (
+                        row.get("expected_success", True)
+                        if workload == CLASS_UNIT
+                        else True
+                    )
                 backends = row.get("optimization_external_engines")
                 eligible = ("silex", *backends) if isinstance(backends, list) else ()
                 tags = _field_tags(row)
                 if workload == ELEMENT_SQUARE_ROOT and metrics["degree"] > 9:
+                    tags.discard("publication")
+                if workload == CLASS_UNIT_GRH:
+                    # Opt-in population: never part of the publication profile.
                     tags.discard("publication")
                 if workload == CLASS_UNIT and row.get("publication") is False:
                     # Class/unit rows measured over about 30 s stay out of the
@@ -456,7 +513,7 @@ def load_cases(corpora: Mapping[str, Path], workload_ids: tuple[str, ...]) -> li
                         workload=workload,
                         input={
                             "coefficients_low_to_high": list(coefficients),
-                            "timeout_seconds": row.get("timeout_seconds"),
+                            "timeout_seconds": timeout_hint,
                         },
                         tags=tuple(sorted(tags)),
                         metrics=metrics,
@@ -464,7 +521,9 @@ def load_cases(corpora: Mapping[str, Path], workload_ids: tuple[str, ...]) -> li
                         expected_status="success" if expected_success else "failure",
                         performance_eligible=bool(expected_success),
                         eligible_backends=tuple(str(item) for item in eligible),
-                        source=str(row.get("source", "")),
+                        source=str(
+                            grh["source"] if workload == CLASS_UNIT_GRH else row.get("source", "")
+                        ),
                     )
                 )
     if SUNIT in workload_ids:

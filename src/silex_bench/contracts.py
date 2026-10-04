@@ -359,7 +359,7 @@ def engine_identity_binding(
     if backend == "silex":
         executable_key = (
             "class_unit_executable"
-            if workload in {"class_unit_proven", "sunit_proven"}
+            if workload in {"class_unit_proven", "class_unit_grh", "sunit_proven"}
             else "operation_executable"
         )
     executable = identity.get(executable_key)

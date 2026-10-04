@@ -130,6 +130,9 @@ K_{suffix}<a_{suffix}> := NumberField(f_{suffix});
 """
 
 
+_CLASS_UNIT_OPERATIONS = ("class_unit_proven", "class_unit_grh")
+
+
 def _program_parts(request: SampleRequest) -> tuple[str, str, str]:
     ready = f"""
 SetNthreads(1);
@@ -137,19 +140,25 @@ SetSeed({request.seed});
 """
 
     setup = _field_program(request.field, "target")
-    if request.operation == "class_unit_proven":
+    # Proven route: Proof := "Full" and GRH := false.  Conditional route:
+    # Proof := "GRH" (a GRH-based bound replaces the Minkowski bound) and
+    # UnitGroup GRH := true (skips the unit proof phase), per the V2.28
+    # handbook ClassGroup and UnitGroup entries.
+    class_proof = "GRH" if request.operation == "class_unit_grh" else "Full"
+    unit_grh = "true" if request.operation == "class_unit_grh" else "false"
+    if request.operation in _CLASS_UNIT_OPERATIONS:
         ready += setup + "O_target := MaximalOrder(K_target);\n"
         target = f"""
 target_cpu_start := Cputime();
 target_wall_start := Realtime();
 class_cpu_start := Cputime();
 class_wall_start := Realtime();
-C_target, class_map_target := ClassGroup(O_target : Proof := "Full");
+C_target, class_map_target := ClassGroup(O_target : Proof := "{class_proof}");
 class_cpu_seconds := Cputime(class_cpu_start);
 class_wall_seconds := Realtime(class_wall_start);
 unit_cpu_start := Cputime();
 unit_wall_start := Realtime();
-U_target, unit_map_target := UnitGroup(O_target : GRH := false);
+U_target, unit_map_target := UnitGroup(O_target : GRH := {unit_grh});
 unit_cpu_seconds := Cputime(unit_cpu_start);
 unit_wall_seconds := Realtime(unit_wall_start);
 target_internal_cpu_seconds := Cputime(target_cpu_start);
@@ -254,7 +263,7 @@ def _normalized_result(
 ) -> tuple[dict[str, Any], list[str]]:
     result: dict[str, Any]
     required: list[str]
-    if operation == "class_unit_proven":
+    if operation in _CLASS_UNIT_OPERATIONS:
         r1 = parse_int(values, "signature_r1")
         r2 = parse_int(values, "signature_r2")
         result = {
@@ -324,6 +333,7 @@ def _timing(
 ) -> dict[str, Any]:
     scopes = {
         "class_unit_proven": "class_and_unit_group_only",
+        "class_unit_grh": "class_and_unit_group_only",
         "maximal_order": "maximal_order_only",
         "ideal_multiply": "ideal_multiplication_only",
         "element_square_root": "number_field_element_is_square_only",
@@ -346,7 +356,7 @@ def _timing(
         "marked_target_wall_ms": marked_target_wall_ms,
         "marked_process_affinity": marked_process_affinity,
     }
-    if operation == "class_unit_proven":
+    if operation in _CLASS_UNIT_OPERATIONS:
         timing["components_ms"] = {
             component: {
                 "cpu_ms": _milliseconds(values, f"{component}_cpu_seconds"),
@@ -449,7 +459,7 @@ quit;
         process_success = process_state_is_valid(raw) and raw["success"]
         unit_error = (
             unit_count_error("Magma", result)
-            if request.operation == "class_unit_proven" and not missing
+            if request.operation in _CLASS_UNIT_OPERATIONS and not missing
             else None
         )
         success = process_success and not missing and unit_error is None
@@ -475,7 +485,22 @@ quit;
                 run_error = unit_error
 
         proof: dict[str, Any] = {}
-        if request.operation == "class_unit_proven":
+        if request.operation == "class_unit_grh":
+            # Labels come from the call contract, as for the proven route:
+            # ClassGroup with Proof := "GRH" is "correct under the GRH" and
+            # UnitGroup with GRH := true has "the same level of rigour"
+            # (V2.28 handbook).  Magma reports no proof state and Bench has
+            # not verified it, so no unconditional proof is claimed.
+            proof = {
+                "certification_status": "grh" if success else "unknown",
+                "class_group_proof_status": "grh" if success else "unknown",
+                "unit_group_proof_status": "grh" if success else "unknown",
+                "regulator_proof_status": "grh" if success else "unknown",
+                "proof_complete": False,
+                "conditional_result_complete": success,
+                "final_result_published": success,
+            }
+        elif request.operation in _CLASS_UNIT_OPERATIONS:
             # The V2.28 handbook documents no intrinsic that reports the
             # proof state of a computed class or unit group.  The labels
             # therefore come from the call contract: ClassGroup with

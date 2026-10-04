@@ -242,8 +242,10 @@ end
 """
 
 
+_CLASS_UNIT_OPERATIONS = ("class_unit_proven", "class_unit_grh")
 _TIMING_SCOPES = {
     "class_unit_proven": "class_and_unit_group_only",
+    "class_unit_grh": "class_and_unit_group_only",
     "maximal_order": "maximal_order_only",
     "ideal_multiply": "ideal_multiplication_only",
     "element_square_root": "number_field_element_is_square_only",
@@ -269,7 +271,7 @@ def _preparation(operation: str, prefix: str, seed: int) -> str:
 Random.seed!({seed})
 {prefix}_K, {prefix}_a = bench_field(P)
 """
-    if operation == "class_unit_proven":
+    if operation in _CLASS_UNIT_OPERATIONS:
         return common + f"{prefix}_O = lll(maximal_order({prefix}_K))\n"
     if operation == "maximal_order":
         return common
@@ -294,20 +296,23 @@ def _timed_call(
     seed: int,
 ) -> str:
     key = output_prefix
+    # Conditional route: GRH = true skips Hecke's class-group and unit-group
+    # proof phases; proven route: GRH = false runs them.
+    grh_value = "true" if operation == "class_unit_grh" else "false"
     start = f"""
 Random.seed!({seed})
 {prefix}_cpu_t0 = bench_process_cpu_ns()
 {prefix}_wall_t0 = time_ns()
 """
-    if operation == "class_unit_proven":
+    if operation in _CLASS_UNIT_OPERATIONS:
         body = f"""
 {prefix}_class_t0 = time_ns()
 {prefix}_C, {prefix}_mC = class_group(
-  {prefix}_O; GRH = false, redo = true, do_lll = false
+  {prefix}_O; GRH = {grh_value}, redo = true, do_lll = false
 )
 {prefix}_class_group_ms = (time_ns() - {prefix}_class_t0) / 1.0e6
 {prefix}_unit_t0 = time_ns()
-{prefix}_U, {prefix}_mU = unit_group({prefix}_O; GRH = false)
+{prefix}_U, {prefix}_mU = unit_group({prefix}_O; GRH = {grh_value})
 {prefix}_unit_group_ms = (time_ns() - {prefix}_unit_t0) / 1.0e6
 """
         timing_lines = f"""
@@ -359,7 +364,7 @@ flush(stdout)
 
 
 def _standard_result(operation: str) -> str:
-    if operation == "class_unit_proven":
+    if operation in _CLASS_UNIT_OPERATIONS:
         return """
 target_signature = signature(target_K)
 target_class_ctx = get_attribute(target_O, :ClassGrpCtx)
@@ -394,7 +399,7 @@ println("root_verified=", target_root_verified)
 
 
 def _paired_result(operation: str) -> str:
-    if operation == "class_unit_proven":
+    if operation in _CLASS_UNIT_OPERATIONS:
         return """
 first_signature = signature(first_K)
 repeat_signature = signature(repeat_K)
@@ -513,7 +518,7 @@ exit()
 
 
 def _result(request: SampleRequest, values: dict[str, str]) -> dict[str, Any]:
-    if request.operation == "class_unit_proven":
+    if request.operation in _CLASS_UNIT_OPERATIONS:
         r1 = parse_int(values, "signature_r1")
         r2 = parse_int(values, "signature_r2")
         return {
@@ -552,7 +557,7 @@ def _components(
     *,
     key_prefix: str = "",
 ) -> dict[str, Any]:
-    if request.operation == "class_unit_proven":
+    if request.operation in _CLASS_UNIT_OPERATIONS:
         return {
             "class_group": parse_float(
                 values, f"{key_prefix}component_class_group_ms"
@@ -579,9 +584,9 @@ def _components(
 
 
 def _complete(request: SampleRequest, result: dict[str, Any], proven: bool) -> bool:
-    if request.operation == "class_unit_proven":
+    if request.operation in _CLASS_UNIT_OPERATIONS:
         return (
-            proven
+            (proven or request.operation == "class_unit_grh")
             and result.get("class_order") is not None
             and result.get("class_invariants") is not None
             and result.get("unit_rank") is not None
@@ -646,7 +651,7 @@ def _timing_sample_payloads(
             "cpu_launcher_executable": process.get("launcher_executable"),
             "cpu_launcher_sha256": process.get("launcher_executable_sha256"),
         }
-        if request.operation == "class_unit_proven":
+        if request.operation in _CLASS_UNIT_OPERATIONS:
             internal_timing.update(
                 {
                     "class_unit_cache_policy": _CLASS_UNIT_CACHE_POLICY,
@@ -784,6 +789,8 @@ readline(stdin)
         result = _result(request, values)
         class_group_proven = parse_bool(values, "class_group_grh_free") is True
         unit_group_proven = parse_bool(values, "unit_group_grh_free") is True
+        class_group_flag_read = parse_bool(values, "class_group_grh_free") is not None
+        unit_group_flag_read = parse_bool(values, "unit_group_grh_free") is not None
         paired = request.jit_repetitions == 1
         results_agree = (
             parse_bool(values, "jit_results_agree") is True
@@ -792,7 +799,7 @@ readline(stdin)
         )
         unit_error = (
             unit_count_error("Hecke", result)
-            if request.operation == "class_unit_proven"
+            if request.operation in _CLASS_UNIT_OPERATIONS
             else None
         )
         # A returned unit count that disagrees with r1 + r2 - 1 means the
@@ -818,7 +825,32 @@ readline(stdin)
             and results_agree
             and unit_error is None
         )
-        if request.operation == "class_unit_proven":
+        if request.operation == "class_unit_grh":
+            # Conditional route.  The class label is grh while
+            # ClassGrpCtx.GRH holds; the unit label is grh while UnitGrpCtx.GRH
+            # holds and the rank is positive (a rank-zero unit group is torsion
+            # only, hence proven), the existing bench_unit_group_grh_free rule.
+            # The overall label stays grh and is never relabelled proven.
+            read_ok = class_group_flag_read and unit_group_flag_read
+            conditional_ok = success and unit_error is None
+            proof = {
+                "certification_status": "grh" if conditional_ok else "unknown",
+                "class_group_proof_status": (
+                    "unknown"
+                    if not read_ok or unit_error is not None
+                    else "proven" if class_group_proven else "grh"
+                ),
+                "unit_group_proof_status": (
+                    "unknown"
+                    if not read_ok or unit_error is not None
+                    else "proven" if unit_group_proven else "grh"
+                ),
+                "regulator_proof_status": "grh" if conditional_ok else "unknown",
+                "proof_complete": False,
+                "conditional_result_complete": conditional_ok,
+                "final_result_published": success,
+            }
+        elif request.operation in _CLASS_UNIT_OPERATIONS:
             # `proven` already folds in `unit_error is None` via
             # `class_group_proven_effective`/`unit_group_proven_effective`, so
             # reuse it here instead of re-deriving that condition.
@@ -885,7 +917,7 @@ readline(stdin)
                 else _components(request, values)
             ),
         }
-        if request.operation == "class_unit_proven":
+        if request.operation in _CLASS_UNIT_OPERATIONS:
             timing.update(
                 {
                     "class_unit_cache_policy": _CLASS_UNIT_CACHE_POLICY,
