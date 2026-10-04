@@ -205,6 +205,29 @@ def descendants():
     return seen
 
 
+def reap_children():
+    while True:
+        try:
+            waited, _ = os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            return
+        if waited <= 0:
+            return
+
+
+def outlived_descendants():
+    # Reap, then scan. A descendant that exits between the reap and the scan
+    # stays a zombie child of this supervisor and would be counted as alive,
+    # so a non-empty scan is followed by a second reap and scan: only
+    # processes still present after that are genuinely alive.
+    reap_children()
+    found = descendants()
+    if found:
+        reap_children()
+        found = descendants()
+    return found
+
+
 def signal_all(pids, signum):
     for pid in pids:
         try:
@@ -451,16 +474,9 @@ def main():
             # spawn-to-reap, reported over the control channel.
             reaped_ns = time.monotonic_ns()
             report_post_handshake(f"WALL {reaped_ns - spawn_ns}")
-            while True:
-                try:
-                    waited, _ = os.waitpid(-1, os.WNOHANG)
-                except ChildProcessError:
-                    break
-                if waited <= 0:
-                    break
             # Descendants still alive now outlived the target. They are killed
             # at once (no polling drain) and the harness fails the sample.
-            if descendants():
+            if outlived_descendants():
                 report_post_handshake("OUTLIVED")
                 terminate_descendants()
             finish(returncode)

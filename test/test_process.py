@@ -2678,6 +2678,31 @@ class SupervisorSourceDescendantTests(unittest.TestCase):
             namespace["kill_target_directly"](4242)  # must not raise
         killpg.assert_not_called()
 
+    def test_exited_descendant_zombie_at_scan_time_is_not_outlived(self) -> None:
+        # Fake process table: a descendant exits after the first reap but
+        # before the scan, so it is a zombie until the next reap.
+        namespace = _load_supervisor_namespace()
+        table = {"zombie": {7001}, "alive": set()}
+
+        def fake_waitpid(pid, flags):
+            if table["zombie"] and table["reaped_once"]:
+                table["zombie"].clear()
+            raise ChildProcessError
+
+        def fake_descendants():
+            found = set(table["zombie"]) | set(table["alive"])
+            table["reaped_once"] = True  # the zombie "exited" after reap #1
+            return found
+
+        table["reaped_once"] = False
+        namespace["descendants"] = fake_descendants
+        with mock.patch.object(os, "waitpid", side_effect=fake_waitpid):
+            self.assertFalse(namespace["outlived_descendants"]())
+        # A live descendant is still reported.
+        table["alive"] = {7002}
+        with mock.patch.object(os, "waitpid", side_effect=ChildProcessError):
+            self.assertTrue(namespace["outlived_descendants"]())
+
     def test_stop_path_kills_target_directly_before_descendant_cleanup(self) -> None:
         namespace = _load_supervisor_namespace()
         order: list[str] = []
