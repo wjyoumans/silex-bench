@@ -41,6 +41,12 @@ developed with Anthropic Claude, under human direction and review.
 - Reports contain absolute timings rather than speedup ratios and generate one
   SVG format, with views by degree and by `log10(abs(D_K))`. Exact signed
   maximal-order discriminants are retained in case metadata.
+- An opt-in `class_unit_grh` workload runs Silex `--mode grh`, PARI `bnfinit`
+  without `bnfcertify`, Hecke `GRH=true` and Magma `Proof := "GRH"`. Its rows
+  are labelled `grh`, stay apart from proven rows in ledgers and reports, and
+  are outside the default suite and the publication profile. Corpus rows opt
+  in through a `grh` object, and corpus rows with a `mode` other than `proven`
+  are rejected.
 - The publication profile uses three repetitions across the expanded
   default field slice and a 60-second observation ceiling. Hecke S-unit
   cells are explicitly excluded from this profile by policy. Default

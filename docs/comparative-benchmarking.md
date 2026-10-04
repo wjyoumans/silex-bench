@@ -63,6 +63,12 @@ silex-bench run --profile dev --backend silex --backend pari \
   --repetitions 3 --timeout 60 --budget 600
 ```
 
+The opt-in `class_unit_grh` workload runs each engine's GRH-conditional
+route (see the [backend contracts](backend-contracts.md)); select it with
+`--workload class_unit_grh`. Its rows are labelled `grh`, stay separate from
+`class_unit_proven` rows in ledgers and reports, and are never compared with
+proven timings.
+
 `plan` resolves selection, capabilities, required pairs, and execution limits
 without starting engines. `doctor` probes availability and provenance; its
 `--build-silex` option prepares native adapters. `check` uses one correctness

@@ -95,6 +95,55 @@ decimal strings.
   count-checked result is labeled proven; a unit-count mismatch labels the
   result unknown.
 
+## GRH-conditional class and unit groups
+
+`class_unit_grh` is an opt-in workload, separate from `class_unit_proven`. It
+is selected with `--workload class_unit_grh`, is not part of the default
+`number-field` suite or the publication profile, and only corpus rows that
+carry a `grh` object (`expected_success`, `source`, optional
+`timeout_seconds`) produce a case. Its case keys, ledger rows, agreements,
+timing rows and report section are scoped by the workload id, so a grh
+observation is never pooled with a proven one. The shared expected values on a
+corpus row come from proven routes and remain the oracle for both workloads; a
+grh result that differs from them fails validation and is never a timing
+sample. Each engine's conditional route:
+
+- **Silex** runs `silex-class-unit-instance --mode grh`. The echoed `mode`
+  must be `grh`, which rejects binaries that predate grh mode. The final result
+  must be published with class, unit and overall labels exactly `grh`. The
+  regulator state is recorded and never required.
+- **PARI/GP** times `bnfinit(nf, 1)` alone, the same call and flag as the first
+  component of the proven route, with no `bnfcertify`. PARI documents the
+  results as conditional on the GRH. Without `bnfcertify` the class number,
+  structure, generators, regulator and units may be wrong, independently of
+  each other. PARI's completeness check is computed in double precision with
+  fitted constants; Bench labels PARI rows `grh` on PARI's documented contract
+  and does not verify the rigor of that check.
+- **Hecke/OSCAR** calls `class_group(...; GRH=true, redo=true, do_lll=false)`
+  and `unit_group(...; GRH=true)`. Both `GRH` flags stay set. The class label is
+  `grh` while `ClassGrpCtx.GRH` holds; the unit label is `grh` while
+  `UnitGrpCtx.GRH` holds and the rank is positive, and `proven` at rank zero
+  (a torsion-only unit group), the same flag rule as the proven route.
+- **Magma** calls `ClassGroup(O : Proof := "GRH")` and
+  `UnitGroup(O : GRH := true)`. The V2.28 handbook says the class group is
+  correct under the GRH and that the unit computation has the same level of
+  rigour. Magma reports no proof state, so the labels follow the call contract.
+  Magma was not run to confirm this route; smoke-check an imaginary quadratic
+  field, a real quadratic field and `x^3+x+200` against PARI before relying on
+  it.
+
+External adapters report `proof_complete: false` (no unconditional proof ran)
+and `conditional_result_complete: true` when the unit count was read back and
+every field is present. The overall `certification_status` of a successful grh
+observation is `grh`, even when a component such as a rank-zero Hecke unit
+group is proven. Validation requires the overall label `grh`, class and unit
+labels `grh` or `proven`, and a published result; `unknown` and `heuristic`
+fail. Agreement compares the same canonical fields as the proven workload
+(class order, invariants, unit rank, signature, maximal-order discriminant),
+not labels, and is consistency evidence among engines that all assume the GRH,
+not proof. Reports render grh timings in their own "GRH-conditional" section
+and never rank them against proven timings.
+
 For every external engine, the unit-count readback runs after the target
 marker and the internal clocks have stopped. It is outside the timed region,
 but it counts toward the process wall time and the observation timeout. An
