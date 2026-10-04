@@ -195,9 +195,9 @@
       "expected_unit_rank": 1,
       "timeout_seconds": 10,
       "expected_success": true,
-      "grh": {"expected_success": true, "source": "Silex grh succeeded after the positive-rank grh acceptance change (reviewer run 2026-10, silex-class-unit-instance --mode grh): h=2 [2], unit rank 1, grh labels (grh bound 100, Minkowski-type bound 463), 8.4 ms implementer timing; this field failed closed in grh mode in the 2026-10 grh-coverage survey before that change; PARI 2.17.3 bnfinit(x^3+x+200, 1) gives cyc [2], regulator 297.835315655189378793583, and bnfcertify returns 1; a conditional-route observation, not a proof"},
+      "grh": {"expected_success": true, "source": "Silex grh succeeded after the positive-rank grh acceptance change (reviewer run 2026-10, silex-class-unit-instance --mode grh; notes/reviews/T-090-reviewer.md): h=2 [2], unit rank 1, grh labels (grh bound 100, Minkowski-type bound 463), 8.4 ms implementer timing; this field failed closed in grh mode in the 2026-10 grh-coverage survey before that change; PARI 2.17.3 bnfinit(x^3+x+200, 1) gives cyc [2], regulator 297.835315655189378793583, and bnfcertify returns 1; a conditional-route observation, not a proof"},
       "status": "comparison_candidate",
-      "source": "Positive-rank cubic with polynomial and maximal-order discriminant -1080004, signature (1,1); PARI 2.17.3 bnfinit(x^3+x+200, 1): class group C2, regulator 297.835315655189378793583, bnfcertify returns 1; 2026-10 grh-coverage survey proven-mode baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds in 25 ms with agreement"
+      "source": "Positive-rank cubic with polynomial and maximal-order discriminant -1080004, signature (1,1); PARI 2.17.3 bnfinit(x^3+x+200, 1): class group C2, regulator 297.835315655189378793583, bnfcertify returns 1; 2026-10 grh-coverage survey proven-mode baseline (notes/reviews/T-086-perf.md; Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds in 25 ms with agreement"
     },
     {
       "id": "quintic_disc401370255_proven",

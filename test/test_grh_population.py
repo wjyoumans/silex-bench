@@ -355,6 +355,8 @@ class GrhCorpusTests(unittest.TestCase):
         case = grh["cubic_disc1080004_proven"]
         self.assertEqual(case.expected["class_order"], 2)
         self.assertEqual(case.expected["unit_rank"], 1)
+        self.assertEqual(case.expected["maximal_order_discriminant"], -1080004)
+        self.assertEqual(case.expected_status, "success")
 
     def test_grh_cases_are_opt_in_per_row_and_keyed_apart(self) -> None:
         both = load_cases(self.suite.corpora, (CLASS_UNIT, CLASS_UNIT_GRH))
