@@ -2344,6 +2344,7 @@ sys.stdin.readline()
         finally:
             proc.stdin.close() if proc.stdin else None
             proc.wait(timeout=10)
+            proc.stdout.close() if proc.stdout else None
         assert start is not None and end is not None
         # The GIL serializes the two workers, so the group burns about 0.6 s
         # in total, and exited threads remain counted; allow for tick
