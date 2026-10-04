@@ -484,6 +484,7 @@ def _programs(request: SampleRequest) -> tuple[str, str, str]:
 {_HELPERS}
 P = {polynomial}
 using LinearAlgebra
+# Snapshot taken in the ready program, before the timed target; not a final-state query.
 benchmark_reported_threads = max(
   Threads.nthreads(), LinearAlgebra.BLAS.get_num_threads())
 {preparations}

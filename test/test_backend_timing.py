@@ -1270,7 +1270,7 @@ class AdapterTimingTests(unittest.TestCase):
                             f"{label} thread-count contract failed",
                             payload["error"],
                         )
-                        self.assertTrue(payload["proof"]["final_result_published"] is False)
+                        self.assertFalse(payload["proof"]["final_result_published"])
 
     def test_hecke_and_magma_programs_query_engine_thread_count(self) -> None:
         sample = request()
