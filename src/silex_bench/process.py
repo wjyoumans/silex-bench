@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import fcntl
-import functools
 import hashlib
 import math
 import os
@@ -677,24 +676,6 @@ def _check_thread_affinities(
             if affinity != [cpu]:
                 return leader, f"thread {tid} has affinity {affinity}"
     return leader, None
-
-
-@functools.lru_cache(maxsize=1)
-def _trusted_cpu_launcher_identity() -> tuple[str, str]:
-    path = trusted_system_executable("taskset")
-    descriptor, digest, resolved = _snapshot_executable(
-        path,
-        cwd=Path.cwd(),
-        env=None,
-    )
-    os.close(descriptor)
-    return resolved, digest
-
-
-def trusted_cpu_launcher_identity() -> dict[str, str]:
-    """Return a fresh copy of the trusted CPU-launcher path/digest identity."""
-    path, digest = _trusted_cpu_launcher_identity()
-    return {"executable": path, "sha256": digest}
 
 
 def _current_available_cpus() -> list[int]:

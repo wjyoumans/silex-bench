@@ -43,14 +43,6 @@ def payload_digest(payload: Any) -> str:
     return hashlib.sha256(stable_json(payload).encode()).hexdigest()
 
 
-def exact_json_equal(left: Any, right: Any) -> bool:
-    """Compare JSON-compatible values without Python bool/int aliasing."""
-    try:
-        return stable_json(left) == stable_json(right)
-    except (TypeError, ValueError):
-        return False
-
-
 def file_digest(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
