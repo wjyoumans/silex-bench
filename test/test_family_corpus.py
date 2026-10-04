@@ -105,6 +105,16 @@ class FamilyCorpusTests(unittest.TestCase):
                     for small, large in zip(invariants[1:], invariants):
                         self.assertEqual(large % small, 0)
 
+    def test_high_degree_family_rows_have_nontrivial_class_groups(self) -> None:
+        covered = {
+            (row["degree"], tuple(row["signature"]))
+            for row in _family_rows()
+            if row["degree"] >= 6 and row["expected_class_order"] > 1
+        }
+        for key in ((6, (0, 3)), (10, (0, 5)), (12, (0, 6)), (10, (10, 0))):
+            with self.subTest(degree_signature=key):
+                self.assertIn(key, covered)
+
     def test_family_rows_are_isolated_from_measured_profiles(self) -> None:
         cases = [
             case
