@@ -215,16 +215,36 @@ def reap_children():
             return
 
 
+def process_state(pid):
+    # State letter from /proc/<pid>/stat, or None when the process is gone.
+    # The command name is parenthesised and may contain ")" or spaces, so the
+    # state is the first field after the last ")".
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as handle:
+            payload = handle.read(4096)
+    except (FileNotFoundError, ProcessLookupError):
+        return None
+    tail = payload.rpartition(b")")[2].split()
+    return tail[0].decode("ascii", "replace") if tail else None
+
+
+def live_descendants():
+    # Descendants that are not exited zombies. Only the outlived check uses
+    # this; descendants() still returns every descendant for cleanup/kill.
+    return {pid for pid in descendants() if process_state(pid) not in (None, "Z")}
+
+
 def outlived_descendants():
     # Reap, then scan. A descendant that exits between the reap and the scan
     # stays a zombie child of this supervisor and would be counted as alive,
-    # so a non-empty scan is followed by a second reap and scan: only
-    # processes still present after that are genuinely alive.
+    # so a non-empty scan is followed by a second reap and scan. A descendant
+    # that exits after the second reap is still a zombie at the second scan;
+    # live_descendants() skips those (state Z), so only live processes count.
     reap_children()
-    found = descendants()
+    found = live_descendants()
     if found:
         reap_children()
-        found = descendants()
+        found = live_descendants()
     return found
 
 

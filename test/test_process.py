@@ -2696,12 +2696,44 @@ class SupervisorSourceDescendantTests(unittest.TestCase):
 
         table["reaped_once"] = False
         namespace["descendants"] = fake_descendants
+        # Fake pids have no /proc entry; report them as live (not Z).
+        namespace["process_state"] = lambda pid: "S"
         with mock.patch.object(os, "waitpid", side_effect=fake_waitpid):
             self.assertFalse(namespace["outlived_descendants"]())
         # A live descendant is still reported.
         table["alive"] = {7002}
         with mock.patch.object(os, "waitpid", side_effect=ChildProcessError):
             self.assertTrue(namespace["outlived_descendants"]())
+
+    def test_zombie_present_at_both_scans_is_not_outlived(self) -> None:
+        # A descendant that exits after the second reap stays a zombie at the
+        # second scan; only /proc state Z can tell it from a live process.
+        namespace = _load_supervisor_namespace()
+        states = {7001: "Z", 7002: "S"}
+        namespace["descendants"] = lambda: set(states)
+        namespace["process_state"] = lambda pid: states.get(pid)
+        with mock.patch.object(os, "waitpid", side_effect=ChildProcessError):
+            self.assertEqual(namespace["outlived_descendants"](), {7002})
+            del states[7002]
+            self.assertFalse(namespace["outlived_descendants"]())
+            states[7003] = "R"
+            self.assertEqual(namespace["outlived_descendants"](), {7003})
+
+    def test_outlived_filter_does_not_change_descendants_for_cleanup(self) -> None:
+        namespace = _load_supervisor_namespace()
+        states = {7001: "Z", 7002: "S"}
+        namespace["direct_children"] = lambda pid: list(states) if pid == os.getpid() else []
+        namespace["process_state"] = lambda pid: states.get(pid)
+        self.assertEqual(namespace["descendants"](), {7001, 7002})
+        self.assertEqual(namespace["live_descendants"](), {7002})
+
+    def test_process_state_parses_stat_with_awkward_command_name(self) -> None:
+        namespace = _load_supervisor_namespace()
+        payload = b"123 (a) Z b) Z 1 123 123 0 -1\n"
+        with mock.patch("builtins.open", mock.mock_open(read_data=payload)):
+            self.assertEqual(namespace["process_state"](123), "Z")
+        with mock.patch("builtins.open", side_effect=FileNotFoundError):
+            self.assertIsNone(namespace["process_state"](123))
 
     def test_stop_path_kills_target_directly_before_descendant_cleanup(self) -> None:
         namespace = _load_supervisor_namespace()
