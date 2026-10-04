@@ -46,6 +46,8 @@ from .base import (
 
 _READY_MARKER = "__SILEX_BENCH_HECKE_READY__"
 _TARGET_MARKER = "__SILEX_BENCH_HECKE_TARGET_DONE__"
+_REQUESTED_THREADS = 1
+_THREAD_COUNT_SOURCE = "julia_nthreads_and_blas_runtime_query_max"
 
 
 def julia_environment(
@@ -481,6 +483,9 @@ def _programs(request: SampleRequest) -> tuple[str, str, str]:
     ready = f"""
 {_HELPERS}
 P = {polynomial}
+using LinearAlgebra
+benchmark_reported_threads = max(
+  Threads.nthreads(), LinearAlgebra.BLAS.get_num_threads())
 {preparations}
 GC.gc()
 println("{_READY_MARKER}")
@@ -511,6 +516,7 @@ flush(stdout)
         else _standard_result(request.operation)
     )
     final = result + """
+println("reported_threads=", benchmark_reported_threads)
 flush(stdout)
 exit()
 """
@@ -818,13 +824,21 @@ readline(stdin)
         class_group_proven_effective = class_group_proven and unit_error is None
         unit_group_proven_effective = unit_group_proven and unit_error is None
         proven = class_group_proven_effective and unit_group_proven_effective
-        success = (
+        result_complete = (
             process_state_is_valid(process)
             and process["success"]
             and _complete(request, result, proven)
             and results_agree
             and unit_error is None
         )
+        reported_threads = parse_int(values, "reported_threads")
+        thread_count = {
+            "requested": _REQUESTED_THREADS,
+            "reported": reported_threads,
+            "matches_requested": reported_threads == _REQUESTED_THREADS,
+            "source": _THREAD_COUNT_SOURCE,
+        }
+        success = result_complete and thread_count["matches_requested"]
         if request.operation == "class_unit_grh":
             # Conditional route.  The class label is grh while
             # ClassGrpCtx.GRH holds; the unit label is grh while UnitGrpCtx.GRH
@@ -925,6 +939,16 @@ readline(stdin)
                 }
             )
         error = process.get("error")
+        if (
+            not success
+            and error is None
+            and result_complete
+            and not thread_count["matches_requested"]
+        ):
+            error = (
+                "Hecke thread-count contract failed: requested "
+                f"{_REQUESTED_THREADS}, reported {reported_threads!r}"
+            )
         if not success and error is None and paired and not results_agree:
             error = "Hecke first-call and repeat-call results disagreed"
         if not success and error is None and unit_error is not None:
@@ -944,8 +968,14 @@ readline(stdin)
             "available": process.get("available", True) is True,
             "success": success,
             "timeout": process.get("timeout") is True,
-            "status": "ok" if success else (
-                "timeout" if process.get("timeout") is True else "compute_error"
+            "status": (
+                "ok"
+                if success
+                else "timeout"
+                if process.get("timeout") is True
+                else "thread_contract"
+                if result_complete and not thread_count["matches_requested"]
+                else "compute_error"
             ),
             "error": error,
             "target_cpu_ms": target_cpu_ms,
@@ -955,6 +985,7 @@ readline(stdin)
             "cmd": process.get("cmd"),
             "result": result,
             "proof": proof,
+            "thread_count": thread_count,
             "timing": timing,
             "timing_samples": timing_samples,
         }

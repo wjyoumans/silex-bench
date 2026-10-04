@@ -43,6 +43,8 @@ from .base import (
 
 _READY_MARKER = "__SILEX_BENCH_MAGMA_READY__"
 _TARGET_MARKER = "__SILEX_BENCH_MAGMA_TARGET_DONE__"
+_REQUESTED_THREADS = 1
+_THREAD_COUNT_SOURCE = "magma_getnthreads_runtime_query"
 _LICENSE_FAILURE_PATTERNS = (
     "couldn't create socket for mac address startup",
     "could not create socket for mac address startup",
@@ -136,6 +138,7 @@ _CLASS_UNIT_OPERATIONS = ("class_unit_proven", "class_unit_grh")
 def _program_parts(request: SampleRequest) -> tuple[str, str, str]:
     ready = f"""
 SetNthreads(1);
+benchmark_reported_threads := GetNthreads();
 SetSeed({request.seed});
 """
 
@@ -250,6 +253,12 @@ quit;
     else:
         raise ValueError(f"unsupported Magma operation: {request.operation}")
     ready += f'printf "{_READY_MARKER}\\n";\n'
+    if final.count("quit;\n") != 1:
+        raise ValueError("Magma final program must end with exactly one quit")
+    final = final.replace(
+        "quit;\n",
+        'printf "reported_threads=%o\\n", benchmark_reported_threads;\nquit;\n',
+    )
     return ready, target, final
 
 
@@ -462,11 +471,27 @@ quit;
             if request.operation in _CLASS_UNIT_OPERATIONS and not missing
             else None
         )
-        success = process_success and not missing and unit_error is None
+        reported_threads = parse_int(values, "reported_threads")
+        thread_count = {
+            "requested": _REQUESTED_THREADS,
+            "reported": reported_threads,
+            "matches_requested": reported_threads == _REQUESTED_THREADS,
+            "source": _THREAD_COUNT_SOURCE,
+        }
+        result_complete = (
+            process_success and not missing and unit_error is None
+        )
+        success = result_complete and thread_count["matches_requested"]
         license_failure = _is_license_failure(raw)
         if success:
             status = "ok"
             run_error = None
+        elif result_complete and not thread_count["matches_requested"]:
+            status = "thread_contract"
+            run_error = (
+                "Magma thread-count contract failed: requested "
+                f"{_REQUESTED_THREADS}, reported {reported_threads!r}"
+            )
         elif license_failure:
             status = "unavailable"
             run_error = _failure_detail(raw)
@@ -554,6 +579,7 @@ quit;
             "cmd": raw.get("cmd"),
             "result": result,
             "proof": proof,
+            "thread_count": thread_count,
             "timing": _timing(
                 request.operation,
                 values,

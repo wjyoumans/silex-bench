@@ -1209,6 +1209,79 @@ class AdapterTimingTests(unittest.TestCase):
                 )
                 self.assertTrue(payload["proof"]["final_result_published"])
 
+    def test_hecke_and_magma_thread_count_match_mismatch_and_missing(self) -> None:
+        engines = (
+            (
+                HeckeBackend,
+                "hecke",
+                {"executable": "/usr/bin/julia", "project": None},
+                "silex_bench.backends.hecke.run_marked_process",
+                "internal_target_cpu_ms=1\ninternal_target_wall_ms=1\n"
+                "component_ideal_multiply_ms=1\nideal_norm=36\n",
+                "julia_nthreads_and_blas_runtime_query_max",
+                "Hecke",
+            ),
+            (
+                MagmaBackend,
+                "magma",
+                {"executable": "/usr/local/bin/magma"},
+                "silex_bench.backends.magma.run_marked_process",
+                "target_internal_cpu_seconds=0.001\n"
+                "target_internal_wall_seconds=0.001\nideal_norm=36\n",
+                "magma_getnthreads_runtime_query",
+                "Magma",
+            ),
+        )
+        cases = (
+            ("reported_threads=1\n", 1, True),
+            ("reported_threads=8\n", 8, False),
+            ("reported_threads=01\n", None, False),
+            ("", None, False),
+        )
+        for factory, name, identity, target, body, source, label in engines:
+            for line, reported, ok in cases:
+                with self.subTest(engine=name, reported=reported, ok=ok):
+                    backend = factory()
+                    backend._probe = {
+                        "engine": name,
+                        "available": True,
+                        "engine_identity": identity,
+                    }
+                    raw = marked_result(body + line)
+                    with tempfile.TemporaryDirectory() as temporary, mock.patch(
+                        target, return_value=raw
+                    ):
+                        payload = backend.run(request(), context(Path(temporary)))
+                    self.assertEqual(payload["success"], ok)
+                    self.assertEqual(
+                        payload["thread_count"],
+                        {
+                            "requested": 1,
+                            "reported": reported,
+                            "matches_requested": ok,
+                            "source": source,
+                        },
+                    )
+                    if ok:
+                        self.assertEqual(payload["status"], "ok")
+                    else:
+                        self.assertEqual(payload["status"], "thread_contract")
+                        self.assertIn(
+                            f"{label} thread-count contract failed",
+                            payload["error"],
+                        )
+                        self.assertTrue(payload["proof"]["final_result_published"] is False)
+
+    def test_hecke_and_magma_programs_query_engine_thread_count(self) -> None:
+        sample = request()
+        ready, _target, final = hecke_programs(sample)
+        self.assertIn("Threads.nthreads()", ready)
+        self.assertIn("BLAS.get_num_threads()", ready)
+        self.assertIn('println("reported_threads="', final)
+        ready, _target, final = magma_programs(sample)
+        self.assertIn("benchmark_reported_threads := GetNthreads();", ready)
+        self.assertIn('printf "reported_threads=%o', final)
+
     def test_magma_internal_zero_is_authoritative_and_marked_is_audit(self) -> None:
         backend = MagmaBackend()
         backend._probe = {
@@ -1220,6 +1293,7 @@ class AdapterTimingTests(unittest.TestCase):
             "target_internal_cpu_seconds=0\n"
             "target_internal_wall_seconds=0\n"
             "ideal_norm=36\n"
+            "reported_threads=1\n"
         )
         with tempfile.TemporaryDirectory() as temporary, mock.patch(
             "silex_bench.backends.magma.run_marked_process",
@@ -1255,6 +1329,7 @@ class AdapterTimingTests(unittest.TestCase):
             "internal_target_wall_ms=0\n"
             "component_ideal_multiply_ms=0\n"
             "ideal_norm=36\n"
+            "reported_threads=1\n"
         )
         with tempfile.TemporaryDirectory() as temporary, mock.patch(
             "silex_bench.backends.hecke.run_marked_process",
@@ -1292,6 +1367,7 @@ class AdapterTimingTests(unittest.TestCase):
             "repeat_component_ideal_multiply_ms=0.75\n"
             "jit_results_agree=true\n"
             "ideal_norm=36\n"
+            "reported_threads=1\n"
         )
         with tempfile.TemporaryDirectory() as temporary, mock.patch(
             "silex_bench.backends.hecke.run_marked_process",
@@ -1414,6 +1490,7 @@ class AdapterTimingTests(unittest.TestCase):
                     "internal_target_wall_ms=1\n"
                     "component_ideal_multiply_ms=1\n"
                     "ideal_norm=36\n"
+                    "reported_threads=1\n"
                 ),
                 "silex_bench.backends.hecke.run_marked_process",
             ),
@@ -1429,6 +1506,7 @@ class AdapterTimingTests(unittest.TestCase):
                     "target_internal_cpu_seconds=0.001\n"
                     "target_internal_wall_seconds=0.001\n"
                     "ideal_norm=36\n"
+                    "reported_threads=1\n"
                 ),
                 "silex_bench.backends.magma.run_marked_process",
             ),
@@ -2123,6 +2201,7 @@ def _hecke_class_unit_stdout(
         "maximal_order_discriminant=5\n"
         f"class_group_grh_free={class_grh_free}\n"
         f"unit_group_grh_free={unit_grh_free}\n"
+        "reported_threads=1\n"
     )
 
 
@@ -2140,6 +2219,7 @@ def _magma_class_unit_stdout(unit_count: int) -> str:
         "unit_wall_seconds=0.001\n"
         "target_internal_cpu_seconds=0.002\n"
         "target_internal_wall_seconds=0.002\n"
+        "reported_threads=1\n"
     )
 
 
@@ -2457,6 +2537,7 @@ def _run_magma(
 _MAGMA_TIMES = (
     "target_internal_cpu_seconds=0.5\n"
     "target_internal_wall_seconds=0.6\n"
+    "reported_threads=1\n"
 )
 
 
