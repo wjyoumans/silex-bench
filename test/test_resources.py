@@ -271,9 +271,9 @@ class BuiltinResourceTests(unittest.TestCase):
             workload: [case for case in selected if case.workload == workload]
             for workload in (*NUMBER_FIELD_WORKLOADS, SUNIT)
         }
-        self.assertEqual(len(selected), 229)
-        self.assertEqual(len(by_workload[CLASS_UNIT]), 55)
-        self.assertEqual(len(by_workload[ELEMENT_SQUARE_ROOT]), 46)
+        self.assertEqual(len(selected), 233)
+        self.assertEqual(len(by_workload[CLASS_UNIT]), 56)
+        self.assertEqual(len(by_workload[ELEMENT_SQUARE_ROOT]), 47)
         self.assertEqual(
             max(case.metrics["degree"] for case in by_workload[ELEMENT_SQUARE_ROOT]),
             9,
@@ -302,8 +302,8 @@ class BuiltinResourceTests(unittest.TestCase):
             )
             for case in selected
         )
-        self.assertEqual(backend_cells, 890)
-        self.assertEqual(backend_cells * profile.repetitions, 2670)
+        self.assertEqual(backend_cells, 906)
+        self.assertEqual(backend_cells * profile.repetitions, 2718)
 
         corpus = json.loads(
             suite.corpora["number_fields"].read_text(encoding="utf-8")

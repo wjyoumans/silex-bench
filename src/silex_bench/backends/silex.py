@@ -433,6 +433,9 @@ class SilexBackend(BackendAdapter):
             "class_order": payload["class_group"].get("order"),
             "class_invariants": payload["class_group"].get("invariants"),
             "unit_rank": payload["unit_group"].get("free_rank"),
+            "regulator_decimal": payload["unit_group"].get("regulator_decimal"),
+            "regulator_midpoint": payload["unit_group"].get("regulator_midpoint"),
+            "regulator_radius": payload["unit_group"].get("regulator_radius"),
             "signature": payload.get("signature"),
             "maximal_order_discriminant": payload.get(
                 "maximal_order_discriminant"
@@ -465,7 +468,12 @@ class SilexBackend(BackendAdapter):
             "certification_status": payload.get("certification_status"),
             "class_group_proof_status": payload.get("class_group_proof_status"),
             "unit_group_proof_status": payload.get("unit_group_proof_status"),
-            "regulator_proof_status": payload.get("regulator_proof_status"),
+            # The native unit_group object carries the regulator enclosure
+            # and its proof label; fall back to the top-level label only for
+            # binaries that predate those keys.
+            "regulator_proof_status": payload["unit_group"].get(
+                "regulator_proof_status", payload.get("regulator_proof_status")
+            ),
             "final_result_published": published,
         }
         requested_mode = _CLASS_UNIT_MODES[request.operation]

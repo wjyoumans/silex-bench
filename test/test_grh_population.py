@@ -142,6 +142,29 @@ class SilexGrhTests(unittest.TestCase):
         self.assertEqual(payload["proof"]["certification_status"], "grh")
         self.assertEqual(payload["timing"]["scope"], "class_and_unit_group_only")
 
+    def test_regulator_fields_come_from_unit_group(self) -> None:
+        native = _grh_native()
+        native["unit_group"] = {
+            "free_rank": 1,
+            "regulator_decimal": "297.835315655189378793583",
+            "regulator_midpoint": 297.83531565518937,
+            "regulator_radius": 1.5e-36,
+            "regulator_proof_status": "grh",
+        }
+        payload, _ = _run_silex(native)
+        self.assertTrue(payload["success"], payload.get("error"))
+        self.assertEqual(
+            payload["result"]["regulator_decimal"], "297.835315655189378793583"
+        )
+        self.assertEqual(payload["result"]["regulator_midpoint"], 297.83531565518937)
+        self.assertEqual(payload["result"]["regulator_radius"], 1.5e-36)
+        self.assertEqual(payload["proof"]["regulator_proof_status"], "grh")
+
+    def test_regulator_status_falls_back_to_top_level(self) -> None:
+        payload, _ = _run_silex(_grh_native())
+        self.assertEqual(payload["proof"]["regulator_proof_status"], "not_checked")
+        self.assertIsNone(payload["result"]["regulator_decimal"])
+
     def test_stale_mode_echo_is_rejected(self) -> None:
         for echo in ("proven", None):
             with self.subTest(echo=echo):
@@ -325,6 +348,13 @@ class GrhCorpusTests(unittest.TestCase):
     def test_default_load_has_no_grh_cases(self) -> None:
         cases = load_cases(self.suite.corpora, self.suite.workloads)
         self.assertFalse([case for case in cases if case.workload == CLASS_UNIT_GRH])
+
+    def test_cubic_1080004_has_grh_corpus_row(self) -> None:
+        both = load_cases(self.suite.corpora, (CLASS_UNIT, CLASS_UNIT_GRH))
+        grh = {case.id: case for case in both if case.workload == CLASS_UNIT_GRH}
+        case = grh["cubic_disc1080004_proven"]
+        self.assertEqual(case.expected["class_order"], 2)
+        self.assertEqual(case.expected["unit_rank"], 1)
 
     def test_grh_cases_are_opt_in_per_row_and_keyed_apart(self) -> None:
         both = load_cases(self.suite.corpora, (CLASS_UNIT, CLASS_UNIT_GRH))

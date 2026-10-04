@@ -183,6 +183,23 @@
       "source": "PARI 2.17.3 bnfinit(x^3 - 4*x^2 - 8*x - 1, 1): class number 1, two fundamental units; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.0052 s"
     },
     {
+      "id": "cubic_disc1080004_proven",
+      "polynomial": "200 + x + x^3",
+      "coefficients_low_to_high": [200, 1, 0, 1],
+      "degree": 3,
+      "discriminant": -1080004,
+      "maximal_order_discriminant": -1080004,
+      "mode": "proven",
+      "expected_class_order": 2,
+      "expected_class_invariants": [2],
+      "expected_unit_rank": 1,
+      "timeout_seconds": 10,
+      "expected_success": true,
+      "grh": {"expected_success": true, "source": "Silex grh succeeded after the positive-rank grh acceptance change (reviewer run 2026-10, silex-class-unit-instance --mode grh): h=2 [2], unit rank 1, grh labels (grh bound 100, Minkowski-type bound 463), 8.4 ms implementer timing; this field failed closed in grh mode in the 2026-10 grh-coverage survey before that change; PARI 2.17.3 bnfinit(x^3+x+200, 1) gives cyc [2], regulator 297.835315655189378793583, and bnfcertify returns 1; a conditional-route observation, not a proof"},
+      "status": "comparison_candidate",
+      "source": "Positive-rank cubic with polynomial and maximal-order discriminant -1080004, signature (1,1); PARI 2.17.3 bnfinit(x^3+x+200, 1): class group C2, regulator 297.835315655189378793583, bnfcertify returns 1; 2026-10 grh-coverage survey proven-mode baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds in 25 ms with agreement"
+    },
+    {
       "id": "quintic_disc401370255_proven",
       "polynomial": "3 - 3*x - 3*x^2 - 6*x^3 - 7*x^4 + x^5",
       "coefficients_low_to_high": [3, -3, -3, -6, -7, 1],
