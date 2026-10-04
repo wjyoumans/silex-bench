@@ -20,7 +20,7 @@
       "expected_success": true,
       "status": "comparison_candidate",
       "benchmark_role": "core",
-      "source": "Existing real-quadratic class/unit benchmark field; polynomial discriminant 20, maximal-order discriminant 5; strict Silex, PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and Magma 2.28-27 full-proof routes agree"
+      "source": "Existing real-quadratic class/unit benchmark field; polynomial discriminant 20, maximal-order discriminant 5; strict Silex, PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and Magma 2.28-27 full-proof routes agree; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.00163 s"
     },
     {
       "id": "real_quadratic_210_proven",
@@ -37,7 +37,7 @@
       "timeout_seconds": 30,
       "expected_success": true,
       "status": "comparison_candidate",
-      "source": "Release correctness regression for the conservative public index-bound boundary and the source-complete real-quadratic relation-table route; 2026-08-06 default Silex proven transaction, PARI full certification, default-environment Hecke GRH=false, and Magma full-proof routes agree"
+      "source": "Release correctness regression for the conservative public index-bound boundary and the source-complete real-quadratic relation-table route; 2026-08-06 default Silex proven transaction, PARI full certification, default-environment Hecke GRH=false, and Magma full-proof routes agree; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.00275 s"
     },
     {
       "id": "imaginary_quadratic_14_proven",
@@ -54,7 +54,7 @@
       "timeout_seconds": 10,
       "expected_success": true,
       "status": "comparison_candidate",
-      "source": "Release default-policy regression promoted from the existing source-neutral S-unit fixture; the ordinary class group is C4 and the first prime above 2 leaves an S-class group C2"
+      "source": "Release default-policy regression promoted from the existing source-neutral S-unit fixture; the ordinary class group is C4 and the first prime above 2 leaves an S-class group C2; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.00136 s"
     },
     {
       "id": "imaginary_quadratic_47_proven",
@@ -71,7 +71,7 @@
       "expected_success": true,
       "status": "comparison_candidate",
       "benchmark_role": "core",
-      "source": "Existing imaginary-quadratic class/unit benchmark field; polynomial discriminant -188, maximal-order discriminant -47; strict Silex, PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and Magma 2.28-27 full-proof routes agree"
+      "source": "Existing imaginary-quadratic class/unit benchmark field; polynomial discriminant -188, maximal-order discriminant -47; strict Silex, PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and Magma 2.28-27 full-proof routes agree; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.00109 s"
     },
     {
       "id": "cubic_x3_minus_2_proven",
@@ -86,7 +86,7 @@
       "timeout_seconds": 10,
       "expected_success": true,
       "status": "comparison_candidate",
-      "source": "Existing cubic class/unit benchmark field; 2026-07-11 strict Silex Hecke/PARI routes, PARI 2.17.3 bnfcertify, and default-depot Hecke GRH=false agree"
+      "source": "Existing cubic class/unit benchmark field; 2026-07-11 strict Silex Hecke/PARI routes, PARI 2.17.3 bnfcertify, and default-depot Hecke GRH=false agree; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.00863 s"
     },
     {
       "id": "cubic_x3_minus_2x_minus_5_proven",
@@ -99,10 +99,10 @@
       "expected_class_order": 2,
       "expected_unit_rank": 1,
       "timeout_seconds": 10,
-      "expected_success": false,
+      "expected_success": true,
       "status": "comparison_candidate",
       "benchmark_role": "core",
-      "source": "Existing nontrivial cubic class/unit benchmark field; 2026-07-11 strict Silex Hecke/PARI routes, PARI 2.17.3 bnfcertify, and default-depot Hecke GRH=false agree"
+      "source": "Existing nontrivial cubic class/unit benchmark field; 2026-07-11 strict Silex Hecke/PARI routes, PARI 2.17.3 bnfcertify, and default-depot Hecke GRH=false agree; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.0102 s"
     },
     {
       "id": "quartic_x4_plus_1_proven",
@@ -117,7 +117,7 @@
       "timeout_seconds": 10,
       "expected_success": true,
       "status": "comparison_candidate",
-      "source": "Existing quartic class/unit benchmark field; 2026-07-11 strict Silex Hecke/PARI routes, PARI 2.17.3 bnfcertify, and default-depot Hecke GRH=false agree"
+      "source": "Existing quartic class/unit benchmark field; 2026-07-11 strict Silex Hecke/PARI routes, PARI 2.17.3 bnfcertify, and default-depot Hecke GRH=false agree; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.00725 s"
     },
     {
       "id": "quartic_x4_minus_x3_minus_x2_plus_2_proven",
@@ -130,9 +130,9 @@
       "expected_class_order": 1,
       "expected_unit_rank": 1,
       "timeout_seconds": 10,
-      "expected_success": false,
+      "expected_success": true,
       "status": "comparison_candidate",
-      "source": "Existing noncyclotomic quartic class/unit benchmark field; 2026-07-11 strict Silex Hecke/PARI routes, PARI 2.17.3 bnfcertify, and default-depot Hecke GRH=false agree"
+      "source": "Existing noncyclotomic quartic class/unit benchmark field; 2026-07-11 strict Silex Hecke/PARI routes, PARI 2.17.3 bnfcertify, and default-depot Hecke GRH=false agree; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.00652 s"
     },
     {
       "id": "random_cubic_proven",
@@ -146,7 +146,7 @@
       "timeout_seconds": 60,
       "expected_success": true,
       "status": "must_pass_fast",
-      "source": "Existing native class/unit matrix row"
+      "source": "Existing native class/unit matrix row; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.00294 s"
     },
     {
       "id": "cubic_disc81_proven",
@@ -162,7 +162,7 @@
       "expected_success": true,
       "status": "must_pass_fast",
       "benchmark_role": "core",
-      "source": "PARI 2.17.3 bnfinit(x^3 - 3*x + 1, 1): class number 1, two fundamental units"
+      "source": "PARI 2.17.3 bnfinit(x^3 - 3*x + 1, 1): class number 1, two fundamental units; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.00359 s"
     },
     {
       "id": "cubic_disc2213_proven",
@@ -177,7 +177,7 @@
       "timeout_seconds": 10,
       "expected_success": true,
       "status": "must_pass_fast",
-      "source": "PARI 2.17.3 bnfinit(x^3 - 4*x^2 - 8*x - 1, 1): class number 1, two fundamental units"
+      "source": "PARI 2.17.3 bnfinit(x^3 - 4*x^2 - 8*x - 1, 1): class number 1, two fundamental units; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.0052 s"
     },
     {
       "id": "quintic_disc401370255_proven",
@@ -190,10 +190,10 @@
       "expected_class_order": 1,
       "expected_unit_rank": 3,
       "timeout_seconds": 10,
-      "expected_success": false,
+      "expected_success": true,
       "status": "comparison_candidate",
       "benchmark_role": "core",
-      "source": "PARI 2.17.3 bnfinit(x^5 - 7*x^4 - 6*x^3 - 3*x^2 - 3*x + 3, 1): class number 1, signature [3, 1], three fundamental units"
+      "source": "PARI 2.17.3 bnfinit(x^5 - 7*x^4 - 6*x^3 - 3*x^2 - 3*x + 3, 1): class number 1, signature [3, 1], three fundamental units; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.337 s"
     },
     {
       "id": "quartic_disc70640_proven",
@@ -206,9 +206,9 @@
       "expected_class_order": 1,
       "expected_unit_rank": 2,
       "timeout_seconds": 10,
-      "expected_success": false,
+      "expected_success": true,
       "status": "comparison_candidate",
-      "source": "Existing native class/unit matrix row; PARI poldisc confirms discriminant -70640"
+      "source": "Existing native class/unit matrix row; PARI poldisc confirms discriminant -70640; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.00603 s"
     },
     {
       "id": "quartic_disc223479_proven",
@@ -221,9 +221,9 @@
       "expected_class_order": 1,
       "expected_unit_rank": 2,
       "timeout_seconds": 10,
-      "expected_success": false,
+      "expected_success": true,
       "status": "comparison_candidate",
-      "source": "Existing native class/unit matrix row; PARI poldisc confirms discriminant -223479"
+      "source": "Existing native class/unit matrix row; PARI poldisc confirms discriminant -223479; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.0142 s"
     },
     {
       "id": "quartic_disc35019_proven",
@@ -236,9 +236,9 @@
       "expected_class_order": 1,
       "expected_unit_rank": 2,
       "timeout_seconds": 10,
-      "expected_success": false,
+      "expected_success": true,
       "status": "comparison_candidate",
-      "source": "Existing native class/unit matrix row; PARI poldisc confirms discriminant -35019"
+      "source": "Existing native class/unit matrix row; PARI poldisc confirms discriminant -35019; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.0154 s"
     },
     {
       "id": "quartic_disc1412343_proven",
@@ -251,10 +251,10 @@
       "expected_class_order": 4,
       "expected_unit_rank": 2,
       "timeout_seconds": 10,
-      "expected_success": false,
+      "expected_success": true,
       "status": "comparison_candidate",
       "benchmark_role": "core",
-      "source": "Existing native class/unit matrix and benchmark row; PARI poldisc confirms discriminant -1412343"
+      "source": "Existing native class/unit matrix and benchmark row; PARI poldisc confirms discriminant -1412343; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.00988 s"
     },
     {
       "id": "quartic_x4_minus_x_minus_1_proven",
@@ -269,7 +269,7 @@
       "timeout_seconds": 10,
       "expected_success": true,
       "status": "comparison_candidate",
-      "source": "Existing native class/unit matrix and benchmark row; PARI poldisc confirms discriminant -283"
+      "source": "Existing native class/unit matrix and benchmark row; PARI poldisc confirms discriminant -283; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.00848 s"
     },
     {
       "id": "quartic_disc1856_proven",
@@ -284,7 +284,7 @@
       "timeout_seconds": 10,
       "expected_success": true,
       "status": "comparison_candidate",
-      "source": "2026-07-11 comparison: strict Silex Hecke/PARI routes, PARI 2.17.3 bnfcertify, and default-depot Hecke GRH=false agree"
+      "source": "2026-07-11 comparison: strict Silex Hecke/PARI routes, PARI 2.17.3 bnfcertify, and default-depot Hecke GRH=false agree; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.013 s"
     },
     {
       "id": "quintic_x5_minus_x_minus_1_proven",
@@ -299,7 +299,7 @@
       "timeout_seconds": 10,
       "expected_success": true,
       "status": "comparison_candidate",
-      "source": "Existing native class/unit matrix and benchmark row; PARI poldisc confirms discriminant 2869"
+      "source": "Existing native class/unit matrix and benchmark row; PARI poldisc confirms discriminant 2869; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.0144 s"
     },
     {
       "id": "quintic_disc4417_proven",
@@ -314,7 +314,7 @@
       "timeout_seconds": 10,
       "expected_success": true,
       "status": "comparison_candidate",
-      "source": "2026-07-11 comparison: strict Silex Hecke/PARI routes, PARI 2.17.3 bnfcertify, and default-depot Hecke GRH=false agree"
+      "source": "2026-07-11 comparison: strict Silex Hecke/PARI routes, PARI 2.17.3 bnfcertify, and default-depot Hecke GRH=false agree; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.0112 s"
     },
     {
       "id": "quintic_disc11119_proven",
@@ -329,7 +329,7 @@
       "timeout_seconds": 10,
       "expected_success": true,
       "status": "comparison_candidate",
-      "source": "Existing native class/unit matrix and benchmark row; PARI poldisc confirms discriminant -11119"
+      "source": "Existing native class/unit matrix and benchmark row; PARI poldisc confirms discriminant -11119; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.0224 s"
     },
     {
       "id": "quintic_disc57895_proven",
@@ -344,7 +344,7 @@
       "timeout_seconds": 10,
       "expected_success": true,
       "status": "comparison_candidate",
-      "source": "Existing native class/unit benchmark row; PARI poldisc confirms discriminant -57895"
+      "source": "Existing native class/unit benchmark row; PARI poldisc confirms discriminant -57895; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.00898 s"
     },
     {
       "id": "sextic_x6_minus_x_minus_1_proven",
@@ -360,7 +360,7 @@
       "expected_success": true,
       "status": "comparison_candidate",
       "benchmark_role": "core",
-      "source": "Existing native class/unit benchmark row; PARI poldisc confirms discriminant 49781"
+      "source": "Existing native class/unit benchmark row; PARI poldisc confirms discriminant 49781; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.0103 s"
     },
     {
       "id": "septic_x7_minus_x_minus_1_proven",
@@ -373,9 +373,9 @@
       "expected_class_order": 1,
       "expected_unit_rank": 3,
       "timeout_seconds": 10,
-      "expected_success": false,
+      "expected_success": true,
       "status": "comparison_candidate",
-      "source": "2026-06-23 backend comparison; PARI/GP bnfinit and Hecke class_group/unit_group agree on class number 1 and unit rank 3"
+      "source": "2026-06-23 backend comparison; PARI/GP bnfinit and Hecke class_group/unit_group agree on class number 1 and unit rank 3; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.0157 s"
     },
     {
       "id": "octic_x8_minus_x_minus_1_proven",
@@ -388,10 +388,10 @@
       "expected_class_order": 1,
       "expected_unit_rank": 4,
       "timeout_seconds": 10,
-      "expected_success": false,
+      "expected_success": true,
       "status": "comparison_candidate",
       "benchmark_role": "core",
-      "source": "2026-06-23 backend comparison; PARI/GP bnfinit and Hecke class_group/unit_group agree on class number 1 and unit rank 4"
+      "source": "2026-06-23 backend comparison; PARI/GP bnfinit and Hecke class_group/unit_group agree on class number 1 and unit rank 4; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.014 s"
     },
     {
       "id": "nonic_x9_minus_x_minus_1_proven",
@@ -406,10 +406,10 @@
       "expected_class_invariants": [],
       "expected_unit_rank": 4,
       "timeout_seconds": 30,
-      "expected_success": false,
+      "expected_success": true,
       "status": "benchmark_scale",
       "benchmark_role": "scale",
-      "source": "2026-07-12 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex agree"
+      "source": "2026-07-12 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex agree; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.0272 s"
     },
     {
       "id": "decic_x10_minus_x_minus_1_proven",
@@ -424,10 +424,10 @@
       "expected_class_invariants": [],
       "expected_unit_rank": 5,
       "timeout_seconds": 30,
-      "expected_success": false,
+      "expected_success": true,
       "status": "benchmark_scale",
       "benchmark_role": "scale",
-      "source": "2026-07-12 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex agree"
+      "source": "2026-07-12 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex agree; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.0298 s"
     },
     {
       "id": "undecic_x11_minus_x_minus_1_proven",
@@ -442,10 +442,10 @@
       "expected_class_invariants": [],
       "expected_unit_rank": 5,
       "timeout_seconds": 60,
-      "expected_success": false,
+      "expected_success": true,
       "status": "benchmark_scale",
       "benchmark_role": "scale",
-      "source": "2026-07-13 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex repeated warm/cold agreement"
+      "source": "2026-07-13 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex repeated warm/cold agreement; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.231 s"
     },
     {
       "id": "duodecic_x12_minus_x_minus_1_proven",
@@ -460,10 +460,10 @@
       "expected_class_invariants": [],
       "expected_unit_rank": 6,
       "timeout_seconds": 60,
-      "expected_success": false,
+      "expected_success": true,
       "status": "benchmark_scale",
       "benchmark_role": "scale",
-      "source": "2026-07-12 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex agree"
+      "source": "2026-07-12 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex agree; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 1.33 s"
     },
     {
       "id": "tridecic_x13_minus_x_minus_1_proven",
@@ -478,10 +478,10 @@
       "expected_class_invariants": [],
       "expected_unit_rank": 6,
       "timeout_seconds": 60,
-      "expected_success": false,
+      "expected_success": true,
       "status": "benchmark_scale",
       "benchmark_role": "scale",
-      "source": "2026-07-12 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex agree"
+      "source": "2026-07-12 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex agree; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 1.82 s"
     },
     {
       "id": "tetradecic_x14_minus_x_minus_1_proven",
@@ -497,10 +497,10 @@
       "expected_class_invariants": [],
       "expected_unit_rank": 7,
       "timeout_seconds": 60,
-      "expected_success": false,
+      "expected_success": true,
       "status": "benchmark_scale",
       "benchmark_role": "scale",
-      "source": "2026-07-16 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds"
+      "source": "2026-07-16 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 10 s"
     },
     {
       "id": "quindecic_x15_minus_x_minus_1_proven",
@@ -515,10 +515,10 @@
       "expected_class_invariants": [],
       "expected_unit_rank": 7,
       "timeout_seconds": 60,
-      "expected_success": false,
+      "expected_success": true,
       "status": "benchmark_scale",
       "benchmark_role": "scale",
-      "source": "2026-07-12 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex agree"
+      "source": "2026-07-12 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex agree; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 29.3 s"
     },
     {
       "id": "hexadecic_x16_minus_x_minus_1_proven",
@@ -533,11 +533,11 @@
       "expected_class_order": 1,
       "expected_class_invariants": [],
       "expected_unit_rank": 8,
-      "timeout_seconds": 60,
-      "expected_success": false,
+      "timeout_seconds": 300,
+      "expected_success": true,
       "status": "benchmark_scale",
       "benchmark_role": "scale",
-      "source": "2026-07-16 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds"
+      "source": "2026-07-16 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 88.4 s"
     },
     {
       "id": "septendecic_x17_minus_x_minus_1_proven",
@@ -551,11 +551,11 @@
       "expected_class_order": 1,
       "expected_class_invariants": [],
       "expected_unit_rank": 8,
-      "timeout_seconds": 60,
-      "expected_success": false,
+      "timeout_seconds": 1200,
+      "expected_success": true,
       "status": "benchmark_scale",
       "benchmark_role": "scale",
-      "source": "2026-07-15 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds"
+      "source": "2026-07-15 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 437 s"
     },
     {
       "id": "octodecic_x18_minus_x_plus_1_proven",
@@ -572,10 +572,11 @@
       "expected_unit_rank": 8,
       "timeout_seconds": 60,
       "expected_success": false,
+      "tracking_task": "T-105",
       "status": "benchmark_scale",
       "benchmark_role": "scale",
       "optimization_external_engines": ["pari"],
-      "source": "2026-07-17 PARI 2.17.3 bnfcertify and transactional native Silex proven agreement under 60 seconds; default-depot Hecke excluded from this optimization row after its 60-second proof timeout"
+      "source": "2026-07-17 PARI 2.17.3 bnfcertify and transactional native Silex proven agreement under 60 seconds; default-depot Hecke excluded from this optimization row after its 60-second proof timeout; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex times out at 600 s in the factor-base honesty scan, tracked by T-105; PARI certifies"
     },
     {
       "id": "nonadecic_x19_minus_x_minus_1_proven",
@@ -591,11 +592,12 @@
       "expected_class_invariants": [],
       "expected_unit_rank": 9,
       "timeout_seconds": 60,
-      "expected_success": true,
+      "expected_success": false,
+      "tracking_task": "T-105",
       "status": "benchmark_scale",
       "benchmark_role": "scale",
       "optimization_external_engines": ["pari"],
-      "source": "2026-07-17 PARI 2.17.3 bnfcertify and transactional native Silex proven agreement under 60 seconds; default-depot Hecke excluded from this optimization row after its 60-second proof timeout"
+      "source": "2026-07-17 PARI 2.17.3 bnfcertify and transactional native Silex proven agreement under 60 seconds; default-depot Hecke excluded from this optimization row after its 60-second proof timeout; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex times out at 600 s in the factor-base honesty scan, tracked by T-105; PARI certifies"
     },
     {
       "id": "biquadratic_v4_disc2304_proven",
@@ -614,7 +616,7 @@
       "expected_success": true,
       "status": "benchmark_diversity",
       "benchmark_role": "diversity",
-      "source": "deterministic monogenic V4 field Q(sqrt(2),sqrt(3)); 2026-07-16 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds"
+      "source": "deterministic monogenic V4 field Q(sqrt(2),sqrt(3)); 2026-07-16 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.00833 s"
     },
     {
       "id": "biquadratic_v4_disc7056_proven",
@@ -633,7 +635,7 @@
       "expected_success": true,
       "status": "benchmark_holdout",
       "benchmark_role": "holdout",
-      "source": "deterministic monogenic V4 field Q(sqrt(3),sqrt(7)); 2026-07-16 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds"
+      "source": "deterministic monogenic V4 field Q(sqrt(3),sqrt(7)); 2026-07-16 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.011 s"
     },
     {
       "id": "random_d3_h16_s42_proven",
@@ -649,10 +651,10 @@
       "expected_class_invariants": [2],
       "expected_unit_rank": 1,
       "timeout_seconds": 60,
-      "expected_success": false,
+      "expected_success": true,
       "status": "benchmark_diversity",
       "benchmark_role": "diversity",
-      "source": "random sweep seed 0x5eed0100, height 16, sample 42; 2026-07-16 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds"
+      "source": "random sweep seed 0x5eed0100, height 16, sample 42; 2026-07-16 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.00908 s"
     },
     {
       "id": "random_d3_h16_s48_proven",
@@ -668,10 +670,10 @@
       "expected_class_invariants": [2],
       "expected_unit_rank": 2,
       "timeout_seconds": 60,
-      "expected_success": false,
+      "expected_success": true,
       "status": "benchmark_holdout",
       "benchmark_role": "holdout",
-      "source": "random sweep seed 0x5eed0100, height 16, sample 48; 2026-07-16 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds"
+      "source": "random sweep seed 0x5eed0100, height 16, sample 48; 2026-07-16 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.00739 s"
     },
     {
       "id": "random_d4_h16_s52_proven",
@@ -687,10 +689,10 @@
       "expected_class_invariants": [2, 2],
       "expected_unit_rank": 2,
       "timeout_seconds": 60,
-      "expected_success": false,
+      "expected_success": true,
       "status": "benchmark_diversity",
       "benchmark_role": "diversity",
-      "source": "random sweep seed 0x5eed0100, height 16, sample 52, equation-order index 2; 2026-07-16 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds"
+      "source": "random sweep seed 0x5eed0100, height 16, sample 52, equation-order index 2; 2026-07-16 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.123 s"
     },
     {
       "id": "random_d4_h16_s54_proven",
@@ -706,10 +708,10 @@
       "expected_class_invariants": [2],
       "expected_unit_rank": 1,
       "timeout_seconds": 60,
-      "expected_success": false,
+      "expected_success": true,
       "status": "benchmark_holdout",
       "benchmark_role": "holdout",
-      "source": "random sweep seed 0x5eed0100, height 16, sample 54; 2026-07-16 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds"
+      "source": "random sweep seed 0x5eed0100, height 16, sample 54; 2026-07-16 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.0154 s"
     },
     {
       "id": "random_d4_h16_s59_proven",
@@ -725,10 +727,10 @@
       "expected_class_invariants": [2],
       "expected_unit_rank": 1,
       "timeout_seconds": 60,
-      "expected_success": false,
+      "expected_success": true,
       "status": "benchmark_diversity",
       "benchmark_role": "diversity",
-      "source": "random sweep seed 0x5eed0100, height 16, sample 59; 2026-07-16 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds"
+      "source": "random sweep seed 0x5eed0100, height 16, sample 59; 2026-07-16 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.00769 s"
     },
     {
       "id": "random_d4_h8_s41_proven",
@@ -744,10 +746,10 @@
       "expected_class_invariants": [2],
       "expected_unit_rank": 1,
       "timeout_seconds": 60,
-      "expected_success": false,
+      "expected_success": true,
       "status": "benchmark_diversity",
       "benchmark_role": "diversity",
-      "source": "random sweep seed 0x5eed0100, height 8, sample 41; 2026-07-16 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds"
+      "source": "random sweep seed 0x5eed0100, height 8, sample 41; 2026-07-16 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.00559 s"
     },
     {
       "id": "random_d5_h16_s58_proven",
@@ -763,10 +765,10 @@
       "expected_class_invariants": [2, 4],
       "expected_unit_rank": 2,
       "timeout_seconds": 60,
-      "expected_success": false,
+      "expected_success": true,
       "status": "benchmark_diversity",
       "benchmark_role": "diversity",
-      "source": "random sweep seed 0x5eed0100, height 16, sample 58; 2026-07-16 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds"
+      "source": "random sweep seed 0x5eed0100, height 16, sample 58; 2026-07-16 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.0669 s"
     },
     {
       "id": "random_d5_h16_s43_proven",
@@ -782,10 +784,10 @@
       "expected_class_invariants": [2],
       "expected_unit_rank": 3,
       "timeout_seconds": 60,
-      "expected_success": false,
+      "expected_success": true,
       "status": "benchmark_holdout",
       "benchmark_role": "holdout",
-      "source": "random sweep seed 0x5eed0100, height 16, sample 43; 2026-07-16 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds"
+      "source": "random sweep seed 0x5eed0100, height 16, sample 43; 2026-07-16 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.405 s"
     },
     {
       "id": "random_d7_h4_s55_proven",
@@ -801,10 +803,10 @@
       "expected_class_invariants": [2],
       "expected_unit_rank": 4,
       "timeout_seconds": 60,
-      "expected_success": false,
+      "expected_success": true,
       "status": "benchmark_diversity",
       "benchmark_role": "diversity",
-      "source": "random sweep seed 0x5eed0100, height 4, sample 55; 2026-07-16 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds"
+      "source": "random sweep seed 0x5eed0100, height 4, sample 55; 2026-07-16 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.745 s"
     },
     {
       "id": "random_d7_h4_s52_proven",
@@ -820,10 +822,10 @@
       "expected_class_invariants": [2],
       "expected_unit_rank": 3,
       "timeout_seconds": 60,
-      "expected_success": false,
+      "expected_success": true,
       "status": "benchmark_holdout",
       "benchmark_role": "holdout",
-      "source": "random sweep seed 0x5eed0100, height 4, sample 52; 2026-07-16 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds"
+      "source": "random sweep seed 0x5eed0100, height 4, sample 52; 2026-07-16 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.257 s"
     },
     {
       "id": "random_d8_h4_s49_proven",
@@ -839,10 +841,10 @@
       "expected_class_invariants": [2],
       "expected_unit_rank": 3,
       "timeout_seconds": 60,
-      "expected_success": false,
+      "expected_success": true,
       "status": "benchmark_diversity",
       "benchmark_role": "diversity",
-      "source": "random sweep seed 0x5eed0100, height 4, sample 49; 2026-07-16 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds"
+      "source": "random sweep seed 0x5eed0100, height 4, sample 49; 2026-07-16 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 1.11 s"
     },
     {
       "id": "random_d8_h2_s48_proven",
@@ -858,10 +860,10 @@
       "expected_class_invariants": [2],
       "expected_unit_rank": 4,
       "timeout_seconds": 60,
-      "expected_success": false,
+      "expected_success": true,
       "status": "benchmark_holdout",
       "benchmark_role": "holdout",
-      "source": "random sweep seed 0x5eed0100, height 2, sample 48; 2026-07-16 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds"
+      "source": "random sweep seed 0x5eed0100, height 2, sample 48; 2026-07-16 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.522 s"
     },
     {
       "id": "random_d6_h4_s11_proven",
@@ -876,10 +878,10 @@
       "expected_class_invariants": [3],
       "expected_unit_rank": 3,
       "timeout_seconds": 60,
-      "expected_success": false,
+      "expected_success": true,
       "status": "benchmark_diversity",
       "benchmark_role": "diversity",
-      "source": "random sweep seed 0x5eed0100, height 4, sample 11; 2026-07-12 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds"
+      "source": "random sweep seed 0x5eed0100, height 4, sample 11; 2026-07-12 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.0866 s"
     },
     {
       "id": "random_d6_h8_s60_proven",
@@ -895,11 +897,11 @@
       "expected_class_invariants": [],
       "expected_unit_rank": 3,
       "timeout_seconds": 60,
-      "expected_success": false,
+      "expected_success": true,
       "status": "benchmark_diversity",
       "benchmark_role": "diversity",
       "optimization_external_engines": ["pari", "hecke"],
-      "source": "random sweep seed 0x5eed0100, height 8, sample 60, equation-order index 3; 2026-07-17 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds"
+      "source": "random sweep seed 0x5eed0100, height 8, sample 60, equation-order index 3; 2026-07-17 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.573 s"
     },
     {
       "id": "random_d6_h8_s64_proven",
@@ -915,11 +917,11 @@
       "expected_class_invariants": [],
       "expected_unit_rank": 3,
       "timeout_seconds": 60,
-      "expected_success": false,
+      "expected_success": true,
       "status": "benchmark_diversity",
       "benchmark_role": "diversity",
       "optimization_external_engines": ["pari", "hecke"],
-      "source": "random sweep seed 0x5eed0100, height 8, sample 64, equation-order index 16; 2026-07-17 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds"
+      "source": "random sweep seed 0x5eed0100, height 8, sample 64, equation-order index 16; 2026-07-17 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.628 s"
     },
     {
       "id": "random_d6_h4_s12_proven",
@@ -934,10 +936,10 @@
       "expected_class_invariants": [],
       "expected_unit_rank": 4,
       "timeout_seconds": 60,
-      "expected_success": false,
+      "expected_success": true,
       "status": "benchmark_holdout",
       "benchmark_role": "holdout",
-      "source": "random sweep seed 0x5eed0100, height 4, sample 12; 2026-07-12 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds"
+      "source": "random sweep seed 0x5eed0100, height 4, sample 12; 2026-07-12 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 0.447 s"
     },
     {
       "id": "random_d9_h4_s8_proven",
@@ -952,10 +954,10 @@
       "expected_class_invariants": [],
       "expected_unit_rank": 5,
       "timeout_seconds": 60,
-      "expected_success": false,
+      "expected_success": true,
       "status": "benchmark_diversity",
       "benchmark_role": "diversity",
-      "source": "random sweep seed 0x5eed0100, height 4, sample 8; 2026-07-12 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds"
+      "source": "random sweep seed 0x5eed0100, height 4, sample 8; 2026-07-12 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 11.6 s"
     },
     {
       "id": "random_d9_h2_s8_proven",
@@ -970,10 +972,10 @@
       "expected_class_invariants": [],
       "expected_unit_rank": 5,
       "timeout_seconds": 60,
-      "expected_success": false,
+      "expected_success": true,
       "status": "benchmark_holdout",
       "benchmark_role": "holdout",
-      "source": "random sweep seed 0x5eed0100, height 2, sample 8; 2026-07-12 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds"
+      "source": "random sweep seed 0x5eed0100, height 2, sample 8; 2026-07-12 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 3.21 s"
     },
     {
       "id": "random_d10_h2_s21_proven",
@@ -989,10 +991,10 @@
       "expected_class_invariants": [],
       "expected_unit_rank": 5,
       "timeout_seconds": 60,
-      "expected_success": false,
+      "expected_success": true,
       "status": "benchmark_diversity",
       "benchmark_role": "diversity",
-      "source": "random sweep seed 0x5eed0100, height 2, sample 21, equation-order index 2; 2026-07-15 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds"
+      "source": "random sweep seed 0x5eed0100, height 2, sample 21, equation-order index 2; 2026-07-15 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 7.14 s"
     },
     {
       "id": "random_d10_h4_s27_proven",
@@ -1007,12 +1009,12 @@
       "expected_class_order": 2,
       "expected_class_invariants": [2],
       "expected_unit_rank": 4,
-      "timeout_seconds": 60,
-      "expected_success": false,
+      "timeout_seconds": 300,
+      "expected_success": true,
       "status": "benchmark_diversity",
       "benchmark_role": "diversity",
       "optimization_external_engines": ["pari"],
-      "source": "random sweep seed 0x5eed0100, height 4, sample 27; 2026-07-17 PARI 2.17.3 bnfcertify and transactional native Silex proven agreement under 60 seconds; default-depot Hecke excluded from this optimization row after its 60-second proof timeout"
+      "source": "random sweep seed 0x5eed0100, height 4, sample 27; 2026-07-17 PARI 2.17.3 bnfcertify and transactional native Silex proven agreement under 60 seconds; default-depot Hecke excluded from this optimization row after its 60-second proof timeout; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 66.7 s"
     },
     {
       "id": "random_d10_h2_s34_proven",
@@ -1028,10 +1030,10 @@
       "expected_class_invariants": [],
       "expected_unit_rank": 5,
       "timeout_seconds": 60,
-      "expected_success": false,
+      "expected_success": true,
       "status": "benchmark_holdout",
       "benchmark_role": "holdout",
-      "source": "random sweep seed 0x5eed0100, height 2, sample 34, equation-order index 2; 2026-07-15 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds"
+      "source": "random sweep seed 0x5eed0100, height 2, sample 34, equation-order index 2; 2026-07-15 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 2.18 s"
     },
     {
       "id": "random_d12_h2_s16_proven",
@@ -1045,11 +1047,11 @@
       "expected_class_order": 1,
       "expected_class_invariants": [],
       "expected_unit_rank": 5,
-      "timeout_seconds": 60,
-      "expected_success": false,
+      "timeout_seconds": 180,
+      "expected_success": true,
       "status": "benchmark_diversity",
       "benchmark_role": "diversity",
-      "source": "random sweep seed 0x5eed0100, height 2, sample 16; 2026-07-12 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds"
+      "source": "random sweep seed 0x5eed0100, height 2, sample 16; 2026-07-12 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 54.9 s"
     },
     {
       "id": "random_d12_h2_s11_proven",
@@ -1064,10 +1066,10 @@
       "expected_class_invariants": [],
       "expected_unit_rank": 7,
       "timeout_seconds": 60,
-      "expected_success": false,
+      "expected_success": true,
       "status": "benchmark_holdout",
       "benchmark_role": "holdout",
-      "source": "random sweep seed 0x5eed0100, height 2, sample 11; 2026-07-12 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds"
+      "source": "random sweep seed 0x5eed0100, height 2, sample 11; 2026-07-12 PARI 2.17.3 bnfcertify, default-depot Hecke GRH=false, and transactional native Silex proven agreement under 60 seconds; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex succeeds with agreement, transaction 17.5 s"
     },
     {
       "id": "cyclotomic_3_phi2",

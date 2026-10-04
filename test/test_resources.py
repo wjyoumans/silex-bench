@@ -187,13 +187,13 @@ class BuiltinResourceTests(unittest.TestCase):
                 self.assertTrue(case.performance_eligible)
                 self.assertEqual(case.input["timeout_seconds"], 10)
 
-    def test_proven_focus_expected_failures_cannot_be_timing_successes(self) -> None:
+    def test_expected_failures_cannot_be_timing_successes(self) -> None:
         failure_ids = (
-            "quartic_disc1412343_proven",
-            "quintic_disc401370255_proven",
+            "octodecic_x18_minus_x_plus_1_proven",
+            "nonadecic_x19_minus_x_minus_1_proven",
         )
         suite = load_suite(builtin_path("suites", "number-field"))
-        profile = load_profile(builtin_path("profiles", "proven-focus"))
+        profile = load_profile(builtin_path("profiles", "scale"))
         cases = load_cases(suite.corpora, (CLASS_UNIT,))
         execution = effective_execution(profile, RunOverrides(case_ids=failure_ids))
         diagnostics = select_cases(cases, execution, performance=False)
@@ -225,8 +225,8 @@ class BuiltinResourceTests(unittest.TestCase):
             workload: [case for case in selected if case.workload == workload]
             for workload in (*NUMBER_FIELD_WORKLOADS, SUNIT)
         }
-        self.assertEqual(len(selected), 193)
-        self.assertEqual(len(by_workload[CLASS_UNIT]), 19)
+        self.assertEqual(len(selected), 233)
+        self.assertEqual(len(by_workload[CLASS_UNIT]), 59)
         self.assertEqual(len(by_workload[ELEMENT_SQUARE_ROOT]), 46)
         self.assertEqual(
             max(case.metrics["degree"] for case in by_workload[ELEMENT_SQUARE_ROOT]),
@@ -256,8 +256,8 @@ class BuiltinResourceTests(unittest.TestCase):
             )
             for case in selected
         )
-        self.assertEqual(backend_cells, 746)
-        self.assertEqual(backend_cells * profile.repetitions, 2238)
+        self.assertEqual(backend_cells, 904)
+        self.assertEqual(backend_cells * profile.repetitions, 2712)
 
         corpus = json.loads(
             suite.corpora["number_fields"].read_text(encoding="utf-8")
