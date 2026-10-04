@@ -446,6 +446,10 @@ def load_cases(corpora: Mapping[str, Path], workload_ids: tuple[str, ...]) -> li
                 tags = _field_tags(row)
                 if workload == ELEMENT_SQUARE_ROOT and metrics["degree"] > 9:
                     tags.discard("publication")
+                if workload == CLASS_UNIT and row.get("publication") is False:
+                    # Class/unit rows measured over about 30 s stay out of the
+                    # publication profile (60 s timeout) and remain in scale.
+                    tags.discard("publication")
                 cases.append(
                     Case(
                         id=identifier,

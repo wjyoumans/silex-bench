@@ -212,6 +212,29 @@ class BuiltinResourceTests(unittest.TestCase):
                         self.assertEqual(validation.checks, {"expected_success": False})
                         self.assertIn("expected-failure", validation.errors[0])
 
+    def test_slow_class_unit_rows_leave_publication_but_stay_in_scale(self) -> None:
+        # Decision: rows measured over about 30 s stay out of the publication
+        # profile (60 s timeout) and remain in the scale profile.
+        slow_ids = {
+            "hexadecic_x16_minus_x_minus_1_proven",
+            "septendecic_x17_minus_x_minus_1_proven",
+            "octodecic_x18_minus_x_plus_1_proven",
+            "nonadecic_x19_minus_x_minus_1_proven",
+            "random_d10_h4_s27_proven",
+            "random_d12_h2_s16_proven",
+        }
+        suite = load_suite(builtin_path("suites", "number-field"))
+        cases = load_cases(suite.corpora, (CLASS_UNIT,))
+        for profile_id, expected_present in (("publication", False), ("scale", True)):
+            with self.subTest(profile=profile_id):
+                profile = load_profile(builtin_path("profiles", profile_id))
+                execution = effective_execution(profile, RunOverrides())
+                selected_ids = {
+                    case.id for case in select_cases(cases, execution, performance=False)
+                }
+                self.assertEqual(slow_ids <= selected_ids, expected_present)
+                self.assertEqual(bool(slow_ids & selected_ids), expected_present)
+
     def test_publication_corpus_uses_all_fields_and_bounds_square_roots(self) -> None:
         suite = load_suite(builtin_path("suites", "number-field"))
         profile = load_profile(builtin_path("profiles", "publication"))
@@ -225,8 +248,8 @@ class BuiltinResourceTests(unittest.TestCase):
             workload: [case for case in selected if case.workload == workload]
             for workload in (*NUMBER_FIELD_WORKLOADS, SUNIT)
         }
-        self.assertEqual(len(selected), 233)
-        self.assertEqual(len(by_workload[CLASS_UNIT]), 59)
+        self.assertEqual(len(selected), 229)
+        self.assertEqual(len(by_workload[CLASS_UNIT]), 55)
         self.assertEqual(len(by_workload[ELEMENT_SQUARE_ROOT]), 46)
         self.assertEqual(
             max(case.metrics["degree"] for case in by_workload[ELEMENT_SQUARE_ROOT]),
@@ -256,8 +279,8 @@ class BuiltinResourceTests(unittest.TestCase):
             )
             for case in selected
         )
-        self.assertEqual(backend_cells, 904)
-        self.assertEqual(backend_cells * profile.repetitions, 2712)
+        self.assertEqual(backend_cells, 890)
+        self.assertEqual(backend_cells * profile.repetitions, 2670)
 
         corpus = json.loads(
             suite.corpora["number_fields"].read_text(encoding="utf-8")
