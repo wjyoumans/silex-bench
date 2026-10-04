@@ -349,10 +349,21 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 
 def _field_tags(row: Mapping[str, Any]) -> set[str]:
-    tags = {"all", "number-field", "publication"}
     identifier = str(row.get("id", ""))
     role = row.get("benchmark_role")
     status = row.get("status")
+    family = row.get("family")
+    if isinstance(family, str) and family:
+        # Family spot-test rows are unmeasured reference rows: tagged by
+        # family only, never selected by the publication/scale/dev/quick
+        # profiles until a measurement promotes them.
+        tags = {"all", "number-field", "family", f"family:{family}"}
+        if isinstance(role, str) and role:
+            tags.add(role)
+        if isinstance(status, str) and status:
+            tags.add(status)
+        return tags
+    tags = {"all", "number-field", "publication"}
     if isinstance(role, str) and role:
         tags.add(role)
     if isinstance(status, str) and status:
