@@ -575,14 +575,13 @@
       "expected_class_order": 1,
       "expected_class_invariants": [],
       "expected_unit_rank": 8,
-      "timeout_seconds": 60,
-      "expected_success": false,
+      "timeout_seconds": 1200,
+      "expected_success": true,
       "publication": false,
-      "tracking_task": "T-105",
       "status": "benchmark_scale",
       "benchmark_role": "scale",
       "optimization_external_engines": ["pari"],
-      "source": "2026-07-17 PARI 2.17.3 bnfcertify and transactional native Silex proven agreement under 60 seconds; default-depot Hecke excluded from this optimization row after its 60-second proof timeout; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex times out at 600 s in the factor-base honesty scan, tracked by T-105; PARI certifies; when T-105 (Zimmert generation bound) fixes this row, raise its timeout_seconds in the same change because Silex needs well over 60 s"
+      "source": "2026-07-17 PARI 2.17.3 bnfcertify and transactional native Silex proven agreement under 60 seconds; default-depot Hecke excluded from this optimization row after its 60-second proof timeout; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): after T-105 (Zimmert generation bound) Silex succeeds in about 317 s on the perf host; the row stays in scale only (class/unit rows over about 30 s stay out of publication)"
     },
     {
       "id": "nonadecic_x19_minus_x_minus_1_proven",
@@ -597,14 +596,13 @@
       "expected_class_order": 1,
       "expected_class_invariants": [],
       "expected_unit_rank": 9,
-      "timeout_seconds": 60,
-      "expected_success": false,
+      "timeout_seconds": 1200,
+      "expected_success": true,
       "publication": false,
-      "tracking_task": "T-105",
       "status": "benchmark_scale",
       "benchmark_role": "scale",
       "optimization_external_engines": ["pari"],
-      "source": "2026-07-17 PARI 2.17.3 bnfcertify and transactional native Silex proven agreement under 60 seconds; default-depot Hecke excluded from this optimization row after its 60-second proof timeout; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): Silex times out at 600 s in the factor-base honesty scan, tracked by T-105; PARI certifies; when T-105 (Zimmert generation bound) fixes this row, raise its timeout_seconds in the same change because Silex needs well over 60 s"
+      "source": "2026-07-17 PARI 2.17.3 bnfcertify and transactional native Silex proven agreement under 60 seconds; default-depot Hecke excluded from this optimization row after its 60-second proof timeout; 2026-10-03 proven-mode coverage baseline (Silex default proven transaction, PARI 2.17.3 bnfinit+bnfcertify, Hecke 0.39.19 GRH=false): after T-105 (Zimmert generation bound) Silex succeeds in about 453 s on the perf host; the row stays in scale only (class/unit rows over about 30 s stay out of publication)"
     },
     {
       "id": "biquadratic_v4_disc2304_proven",

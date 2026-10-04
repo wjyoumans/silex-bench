@@ -40,9 +40,13 @@ class ExpectedSuccessTrackingTests(unittest.TestCase):
                 self.assertIsNotNone(tracking_reference(row))
 
     def test_missing_reference_is_detected(self) -> None:
-        row = next(r for r in _rows() if r["expected_success"] is False and "family" not in r)
-        stripped = {k: v for k, v in row.items() if k != "tracking_task"}
-        self.assertIsNone(tracking_reference(stripped))
+        self.assertIsNone(
+            tracking_reference({"id": "x", "expected_success": False, "source": "none"})
+        )
+        self.assertEqual(
+            tracking_reference({"expected_success": False, "tracking_task": "T-105"}),
+            "T-105",
+        )
 
     def test_true_rows_do_not_claim_a_failure_tracker(self) -> None:
         for row in _rows():

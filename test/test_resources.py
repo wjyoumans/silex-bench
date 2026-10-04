@@ -188,21 +188,13 @@ class BuiltinResourceTests(unittest.TestCase):
                 self.assertEqual(case.input["timeout_seconds"], 10)
 
     def test_expected_failures_cannot_be_timing_successes(self) -> None:
-        failure_ids = (
-            "octodecic_x18_minus_x_plus_1_proven",
-            "nonadecic_x19_minus_x_minus_1_proven",
-        )
         suite = load_suite(builtin_path("suites", "number-field"))
-        profile = load_profile(builtin_path("profiles", "scale"))
         cases = load_cases(suite.corpora, (CLASS_UNIT,))
-        execution = effective_execution(profile, RunOverrides(case_ids=failure_ids))
-        diagnostics = select_cases(cases, execution, performance=False)
-        self.assertEqual({case.id for case in diagnostics}, set(failure_ids))
-        self.assertEqual(select_cases(cases, execution, performance=True), [])
+        failures = [case for case in cases if case.expected_status == "failure"]
+        self.assertTrue(failures)
         contract = builtin_registry().workloads[CLASS_UNIT]
-        for case in diagnostics:
+        for case in failures[:5]:
             with self.subTest(case=case.key):
-                self.assertEqual(case.expected_status, "failure")
                 self.assertFalse(case.performance_eligible)
                 self.assertNotIn("dev", case.tags)
                 for backend in ("silex", "pari"):
@@ -211,6 +203,37 @@ class BuiltinResourceTests(unittest.TestCase):
                         self.assertFalse(validation.success)
                         self.assertEqual(validation.checks, {"expected_success": False})
                         self.assertIn("expected-failure", validation.errors[0])
+
+    def test_degree_18_and_19_proven_rows_succeed_in_scale_only(self) -> None:
+        # T-105 made these rows succeed (about 317 s and 453 s on the perf
+        # host); the timeout leaves margin and the rows stay out of publication.
+        ids = (
+            "octodecic_x18_minus_x_plus_1_proven",
+            "nonadecic_x19_minus_x_minus_1_proven",
+        )
+        suite = load_suite(builtin_path("suites", "number-field"))
+        cases = {
+            case.id: case
+            for case in load_cases(suite.corpora, (CLASS_UNIT,))
+            if case.id in ids
+        }
+        self.assertEqual(set(cases), set(ids))
+        for case in cases.values():
+            with self.subTest(case=case.id):
+                self.assertEqual(case.expected_status, "success")
+                self.assertTrue(case.performance_eligible)
+                self.assertEqual(case.input["timeout_seconds"], 1200)
+        for profile_id, expected_present in (("publication", False), ("scale", True)):
+            with self.subTest(profile=profile_id):
+                profile = load_profile(builtin_path("profiles", profile_id))
+                execution = effective_execution(profile, RunOverrides())
+                selected = {
+                    case.id
+                    for case in select_cases(
+                        list(cases.values()), execution, performance=False
+                    )
+                }
+                self.assertEqual(selected == set(ids), expected_present)
 
     def test_slow_class_unit_rows_leave_publication_but_stay_in_scale(self) -> None:
         # Decision: rows measured over about 30 s stay out of the publication
