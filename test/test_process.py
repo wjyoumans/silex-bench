@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import fcntl
 import hashlib
 import json
@@ -2548,6 +2549,102 @@ class ParentAffinityPinTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertEqual(calls[-1], ("set", {0, 1, 2, 12}))
         self.assertEqual(state["affinity"], {0, 1, 2, 12})
+        self.assertIsNone(process_module._PARENT_ORIGINAL_AFFINITY)
+
+    def test_parent_pin_real_process_child_runs_on_target_cpu(self) -> None:
+        if not (
+            hasattr(os, "sched_getaffinity") and hasattr(os, "sched_setaffinity")
+        ):
+            self.skipTest("sched_setaffinity is unavailable")
+        if shutil.which("taskset") is None:
+            self.skipTest("taskset is unavailable")
+        original = set(os.sched_getaffinity(0))
+        if len(original) < 2:
+            self.skipTest("at least two available CPUs are required")
+        cpu = min(original)
+        housekeeping = set(
+            process_module._supervisor_housekeeping_cpus(cpu, sorted(original))
+        )
+        if housekeeping == original or cpu in housekeeping:
+            self.skipTest("parent cannot be pinned off the target CPU")
+        child = """
+import os
+import sys
+sys.stdin.readline()
+print("READY", flush=True)
+nonce = sys.stdin.readline().strip()
+print("TARGET:" + nonce, flush=True)
+sys.stdin.readline()
+child_set = sorted(os.sched_getaffinity(0))
+parent_set = sorted(os.sched_getaffinity(int(sys.argv[1])))
+print("AFFINITY:" + repr((child_set, parent_set)), flush=True)
+"""
+        with tempfile.TemporaryDirectory() as temporary:
+            result = run_marked_process(
+                [sys.executable, "-u", "-c", child, str(os.getpid())],
+                ready_input="start\n",
+                target_input=TARGET_NONCE_PLACEHOLDER + "\n",
+                final_input="finish\n",
+                ready_marker="READY",
+                target_marker="TARGET",
+                timeout=5.0,
+                cwd=Path(temporary),
+                cpu=cpu,
+            )
+        self.assertTrue(result["success"], result)
+        line = [
+            x for x in result["stdout"].splitlines() if x.startswith("AFFINITY:")
+        ]
+        self.assertEqual(len(line), 1, result["stdout"])
+        child_set, parent_set = ast.literal_eval(line[0][len("AFFINITY:"):])
+        self.assertEqual(child_set, [cpu])
+        self.assertEqual(set(parent_set), housekeeping)
+        self.assertNotIn(cpu, parent_set)
+        self.assertEqual(set(os.sched_getaffinity(0)), original)
+        self.assertIsNone(process_module._PARENT_ORIGINAL_AFFINITY)
+
+    def test_failed_affinity_restore_does_not_replace_result(self) -> None:
+        def inner(cmd, **kwargs):
+            return {"success": True}
+
+        def failing_set(pid, cpus):
+            if set(cpus) == {0, 1, 2, 12}:
+                raise OSError("restore failed")
+
+        with mock.patch.object(
+            process_module.os, "sched_getaffinity",
+            lambda pid: {0, 1, 2, 12},
+        ), mock.patch.object(
+            process_module.os, "sched_setaffinity", failing_set
+        ), mock.patch.object(
+            process_module, "_read_thread_siblings", return_value={0, 12}
+        ), mock.patch.object(
+            process_module, "_run_marked_process", inner
+        ):
+            result = process_module.run_marked_process(["x"], cpu=0)
+        self.assertEqual(result, {"success": True})
+        self.assertIsNone(process_module._PARENT_ORIGINAL_AFFINITY)
+
+    def test_failed_affinity_restore_keeps_original_exception(self) -> None:
+        def inner(cmd, **kwargs):
+            raise RuntimeError("boom")
+
+        def failing_set(pid, cpus):
+            if set(cpus) == {0, 1, 2, 12}:
+                raise OSError("restore failed")
+
+        with mock.patch.object(
+            process_module.os, "sched_getaffinity",
+            lambda pid: {0, 1, 2, 12},
+        ), mock.patch.object(
+            process_module.os, "sched_setaffinity", failing_set
+        ), mock.patch.object(
+            process_module, "_read_thread_siblings", return_value={0, 12}
+        ), mock.patch.object(
+            process_module, "_run_marked_process", inner
+        ):
+            with self.assertRaisesRegex(RuntimeError, "boom"):
+                process_module.run_marked_process(["x"], cpu=0)
         self.assertIsNone(process_module._PARENT_ORIGINAL_AFFINITY)
 
     def test_no_cpu_leaves_parent_unpinned(self) -> None:

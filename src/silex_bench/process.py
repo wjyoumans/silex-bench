@@ -1664,7 +1664,15 @@ def run_marked_process(cmd: list[str], **kwargs: Any) -> dict[str, Any]:
     While the timed process runs, the parent (which reads markers during the
     timed interval) is pinned to the supervisor's housekeeping CPUs, then its
     original affinity is restored on every path. Pinning is best effort: if
-    the affinity cannot be read or set, the run proceeds unpinned.
+    the affinity cannot be read or set, the run proceeds unpinned, and a
+    failed restore is ignored.
+
+    Limits of the module-level `_PARENT_ORIGINAL_AFFINITY`: on Linux,
+    `sched_setaffinity(0, ...)` pins only the calling thread, so the pin
+    covers the thread that runs this function and the supervisor it spawns.
+    A concurrent call from another thread sees the global as set and runs
+    unpinned, and that thread's `_current_available_cpus` reports the first
+    call's original set. Nested calls from the same thread are guarded.
     """
     global _PARENT_ORIGINAL_AFFINITY
     cpu = kwargs.get("cpu")
@@ -1692,7 +1700,12 @@ def run_marked_process(cmd: list[str], **kwargs: Any) -> dict[str, Any]:
         return _run_marked_process(cmd, **kwargs)
     finally:
         _PARENT_ORIGINAL_AFFINITY = None
-        os.sched_setaffinity(0, original)
+        try:
+            os.sched_setaffinity(0, original)
+        except OSError:
+            # Best effort, like the pin: a failed restore must not replace
+            # the run result or the original exception.
+            pass
 
 
 def _run_marked_process(
