@@ -62,6 +62,7 @@ class SyntheticImplementation:
     recorder: InvocationRecorder
     variants: tuple[str, ...] = ("standard",)
     workload: str = MAXIMAL_ORDER
+    timing_extra: dict[str, object] = dataclasses.field(default_factory=dict)
 
     def run(self, case, *, repetition, order_index, warmup, context, contract):
         if warmup is not None:
@@ -89,7 +90,7 @@ class SyntheticImplementation:
                 timeout_source=context.timeout_source,
                 wall_clock="CLOCK_MONOTONIC",
                 cpu_clock="CLOCK_PROCESS_CPUTIME_ID",
-                internal_timing={"fixture": True},
+                internal_timing={"fixture": True, **self.timing_extra},
                 diagnostics={},
             )
             for index, variant in enumerate(self.variants)
@@ -122,11 +123,14 @@ def synthetic_registry(
     *,
     variants: tuple[str, ...] = ("standard",),
     backends: tuple[str, ...] = ("silex", "pari"),
+    timing_extra: dict[str, object] | None = None,
 ) -> Registry:
     contract = NumberFieldContract(MAXIMAL_ORDER, "Maximal order")
     descriptors: list[BackendDescriptor] = []
     for backend in backends:
-        implementation = SyntheticImplementation(backend, recorder, variants)
+        implementation = SyntheticImplementation(
+            backend, recorder, variants, timing_extra=dict(timing_extra or {})
+        )
 
         def probe(context, descriptor, *, selected=backend):
             del context, descriptor
@@ -340,6 +344,31 @@ class TimingSampleLedgerTests(unittest.TestCase):
         snapshot = run_campaign(plan, run_dir)
         self.assertEqual(snapshot["state"], "complete")
         return plan, run_dir, snapshot
+
+    def test_supervisor_isolation_keys_round_trip_and_old_ledgers_load(self) -> None:
+        extra = {
+            "marked_process_supervisor_affinity": [2, 3],
+            "marked_process_supervisor_isolation_tier": 1,
+        }
+        new_registry = synthetic_registry(
+            InvocationRecorder(), timing_extra=extra
+        )
+        new_plan = build_fixture_plan(self.root, new_registry)
+        new_snapshot = run_campaign(new_plan, self.root / "with-keys")
+        self.assertEqual(new_snapshot["state"], "complete")
+        for sample in new_snapshot["timing_samples"]:
+            for key, value in extra.items():
+                self.assertEqual(sample["internal_timing"][key], value)
+        # A ledger written before the keys existed (no keys) still loads.
+        _, old_dir, _ = self._completed_run("without-keys")
+        with RunLedger(old_dir) as ledger:
+            samples = ledger.timing_samples()
+        self.assertTrue(samples)
+        for sample in samples:
+            self.assertNotIn(
+                "marked_process_supervisor_isolation_tier",
+                sample["internal_timing"],
+            )
 
     def test_parent_and_timing_child_persist_atomically(self) -> None:
         plan, source_dir, snapshot = self._completed_run("source")

@@ -714,7 +714,15 @@ def _check_thread_affinities(
     return leader, None
 
 
+# Affinity of the harness parent before run_marked_process pinned it off the
+# target core; _current_available_cpus reports this set while the pin is
+# active so recorded availability and tier computation see the original set.
+_PARENT_ORIGINAL_AFFINITY: frozenset[int] | None = None
+
+
 def _current_available_cpus() -> list[int]:
+    if _PARENT_ORIGINAL_AFFINITY is not None:
+        return sorted(_PARENT_ORIGINAL_AFFINITY)
     try:
         return sorted(os.sched_getaffinity(0))
     except (AttributeError, OSError) as exc:
@@ -806,6 +814,25 @@ def _supervisor_housekeeping_cpus(
     if tier2:
         return tuple(sorted(tier2))
     return tuple(sorted(available))
+
+
+def _supervisor_isolation_tier(
+    cpu: int | None, supervisor_cpus: tuple[int, ...] | None
+) -> int | None:
+    """Classify the supervisor's isolation from the target CPU.
+
+    None when no CPU is pinned; 1 when the supervisor set avoids the target
+    CPU and its SMT siblings; 2 when it avoids the target CPU but shares its
+    core; 3 when it shares the target CPU.
+    """
+    if cpu is None or supervisor_cpus is None:
+        return None
+    if cpu in supervisor_cpus:
+        return 3
+    siblings = (_read_thread_siblings(cpu) or set()) - {cpu}
+    if siblings & set(supervisor_cpus):
+        return 2
+    return 1
 
 
 def _resolved_command_path(
@@ -1082,6 +1109,9 @@ def _pinned_command(
             "launcher_digest": launcher_digest,
             "immutable_inputs": immutable_inputs,
             "supervisor_cpus": supervisor_cpus,
+            "supervisor_isolation_tier": _supervisor_isolation_tier(
+                cpu, supervisor_cpus
+            ),
         }
     except BaseException:
         for descriptor in descriptors:
@@ -1628,7 +1658,44 @@ def run_process(
     }, channel)
 
 
-def run_marked_process(
+def run_marked_process(cmd: list[str], **kwargs: Any) -> dict[str, Any]:
+    """Run `_run_marked_process` with the harness parent off the target core.
+
+    While the timed process runs, the parent (which reads markers during the
+    timed interval) is pinned to the supervisor's housekeeping CPUs, then its
+    original affinity is restored on every path. Pinning is best effort: if
+    the affinity cannot be read or set, the run proceeds unpinned.
+    """
+    global _PARENT_ORIGINAL_AFFINITY
+    cpu = kwargs.get("cpu")
+    if (
+        type(cpu) is not int
+        or _PARENT_ORIGINAL_AFFINITY is not None
+        or not hasattr(os, "sched_setaffinity")
+    ):
+        return _run_marked_process(cmd, **kwargs)
+    try:
+        original = frozenset(os.sched_getaffinity(0))
+    except OSError:
+        return _run_marked_process(cmd, **kwargs)
+    if cpu not in original:
+        return _run_marked_process(cmd, **kwargs)
+    housekeeping = set(_supervisor_housekeeping_cpus(cpu, sorted(original)))
+    if housekeeping == set(original):
+        return _run_marked_process(cmd, **kwargs)
+    try:
+        os.sched_setaffinity(0, housekeeping)
+    except OSError:
+        return _run_marked_process(cmd, **kwargs)
+    _PARENT_ORIGINAL_AFFINITY = original
+    try:
+        return _run_marked_process(cmd, **kwargs)
+    finally:
+        _PARENT_ORIGINAL_AFFINITY = None
+        os.sched_setaffinity(0, original)
+
+
+def _run_marked_process(
     cmd: list[str],
     *,
     ready_input: str,
@@ -1684,6 +1751,12 @@ def run_marked_process(
         "launcher_executable": pinned["launcher_path"],
         "launcher_executable_sha256": pinned["launcher_digest"],
         "immutable_inputs": pinned["immutable_inputs"],
+        "supervisor_affinity": (
+            None
+            if pinned.get("supervisor_cpus") is None
+            else list(pinned.get("supervisor_cpus"))
+        ),
+        "supervisor_isolation_tier": pinned.get("supervisor_isolation_tier"),
     }
 
     stdout_output = bytearray()

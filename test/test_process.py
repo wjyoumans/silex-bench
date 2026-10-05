@@ -1300,6 +1300,14 @@ sys.stdin.readline()
         self.assertTrue(result["available"])
         self.assertTrue(result["success"])
         self.assertEqual(result["effective_affinity"], [cpu])
+        self.assertIsInstance(result["supervisor_affinity"], list)
+        self.assertIn(result["supervisor_isolation_tier"], (1, 2, 3))
+        self.assertEqual(
+            result["supervisor_isolation_tier"],
+            process_module._supervisor_isolation_tier(
+                cpu, tuple(result["supervisor_affinity"])
+            ),
+        )
         self.assertTrue(Path(result["launcher_executable"]).is_absolute())
         self.assertRegex(result["launcher_executable_sha256"], r"^[0-9a-f]{64}$")
 
@@ -2463,6 +2471,91 @@ class SupervisorHousekeepingCpuTests(unittest.TestCase):
         ):
             result = process_module._supervisor_housekeeping_cpus(0, [0, 1, 2])
         self.assertEqual(result, (1, 2))
+
+
+class SupervisorIsolationTierTests(unittest.TestCase):
+    def tier(self, cpu, supervisor, siblings):
+        with mock.patch(
+            "silex_bench.process._read_thread_siblings", return_value=siblings
+        ):
+            return process_module._supervisor_isolation_tier(cpu, supervisor)
+
+    def test_tiers(self) -> None:
+        self.assertEqual(self.tier(0, (1, 2), {0, 12}), 1)
+        self.assertEqual(self.tier(0, (12,), {0, 12}), 2)
+        self.assertEqual(self.tier(0, (0,), {0, 12}), 3)
+        self.assertEqual(self.tier(0, (0, 12), {0, 12}), 3)
+        self.assertEqual(self.tier(0, (1,), None), 1)
+
+    def test_no_pinned_cpu_has_null_tier(self) -> None:
+        self.assertIsNone(self.tier(None, None, {0, 12}))
+        self.assertIsNone(self.tier(None, (1,), {0, 12}))
+
+
+class ParentAffinityPinTests(unittest.TestCase):
+    """The harness parent is pinned off the target core only during a run."""
+
+    def run_wrapper(self, inner, available=frozenset({0, 1, 2, 12})):
+        calls: list[tuple[str, Any]] = []
+        state = {"affinity": set(available)}
+
+        def fake_get(pid):
+            return set(state["affinity"])
+
+        def fake_set(pid, cpus):
+            calls.append(("set", set(cpus)))
+            state["affinity"] = set(cpus)
+
+        with mock.patch.object(
+            process_module.os, "sched_getaffinity", fake_get
+        ), mock.patch.object(
+            process_module.os, "sched_setaffinity", fake_set
+        ), mock.patch.object(
+            process_module, "_read_thread_siblings", return_value={0, 12}
+        ), mock.patch.object(
+            process_module, "_run_marked_process", inner
+        ):
+            try:
+                result = process_module.run_marked_process(["x"], cpu=0)
+            except RuntimeError:
+                result = None
+        return calls, state, result
+
+    def test_parent_pinned_during_run_and_restored_after_success(self) -> None:
+        seen: list[Any] = []
+
+        def inner(cmd, **kwargs):
+            seen.append(
+                (
+                    set(os.sched_getaffinity(0)),
+                    process_module._current_available_cpus(),
+                )
+            )
+            return {"success": True}
+
+        calls, state, result = self.run_wrapper(inner)
+        self.assertEqual(result, {"success": True})
+        self.assertEqual(seen, [({1, 2}, [0, 1, 2, 12])])
+        self.assertEqual(calls, [("set", {1, 2}), ("set", {0, 1, 2, 12})])
+        self.assertEqual(state["affinity"], {0, 1, 2, 12})
+        self.assertIsNone(process_module._PARENT_ORIGINAL_AFFINITY)
+
+    def test_parent_affinity_restored_after_exception(self) -> None:
+        def inner(cmd, **kwargs):
+            raise RuntimeError("boom")
+
+        calls, state, result = self.run_wrapper(inner)
+        self.assertIsNone(result)
+        self.assertEqual(calls[-1], ("set", {0, 1, 2, 12}))
+        self.assertEqual(state["affinity"], {0, 1, 2, 12})
+        self.assertIsNone(process_module._PARENT_ORIGINAL_AFFINITY)
+
+    def test_no_cpu_leaves_parent_unpinned(self) -> None:
+        with mock.patch.object(
+            process_module, "_run_marked_process", return_value={}
+        ), mock.patch.object(process_module.os, "sched_setaffinity") as setter:
+            process_module.run_marked_process(["x"], cpu=None)
+        setter.assert_not_called()
 
 
 class SupervisorSourceDescendantTests(unittest.TestCase):

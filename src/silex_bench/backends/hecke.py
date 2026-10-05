@@ -655,6 +655,12 @@ def _timing_sample_payloads(
                 request, values, key_prefix=key_prefix
             ),
             "marked_process_affinity": process.get("effective_affinity"),
+            "marked_process_supervisor_affinity": process.get(
+                "supervisor_affinity"
+            ),
+            "marked_process_supervisor_isolation_tier": process.get(
+                "supervisor_isolation_tier"
+            ),
             "cpu_launcher_executable": process.get("launcher_executable"),
             "cpu_launcher_sha256": process.get("launcher_executable_sha256"),
         }
@@ -924,6 +930,12 @@ readline(stdin)
             "marked_target_cpu_ms": marked_target_cpu_ms,
             "marked_target_wall_ms": marked_target_wall_ms,
             "marked_process_affinity": process.get("effective_affinity"),
+            "marked_process_supervisor_affinity": process.get(
+                "supervisor_affinity"
+            ),
+            "marked_process_supervisor_isolation_tier": process.get(
+                "supervisor_isolation_tier"
+            ),
             "cpu_launcher_executable": process.get("launcher_executable"),
             "cpu_launcher_sha256": process.get("launcher_executable_sha256"),
             "components_ms": (

@@ -174,6 +174,12 @@ def _native_failure_payload(
             "marked_target_cpu_ms": process.get("target_cpu_ms"),
             "marked_target_wall_ms": process.get("target_wall_ms"),
             "marked_process_affinity": process.get("effective_affinity"),
+            "marked_process_supervisor_affinity": process.get(
+                "supervisor_affinity"
+            ),
+            "marked_process_supervisor_isolation_tier": process.get(
+                "supervisor_isolation_tier"
+            ),
             "cpu_launcher_executable": process.get("launcher_executable"),
             "cpu_launcher_sha256": process.get("launcher_executable_sha256"),
         }
@@ -520,6 +526,12 @@ class SilexBackend(BackendAdapter):
             "marked_target_cpu_ms": process.get("target_cpu_ms"),
             "marked_target_wall_ms": process.get("target_wall_ms"),
             "marked_process_affinity": process.get("effective_affinity"),
+            "marked_process_supervisor_affinity": process.get(
+                "supervisor_affinity"
+            ),
+            "marked_process_supervisor_isolation_tier": process.get(
+                "supervisor_isolation_tier"
+            ),
             "cpu_launcher_executable": process.get("launcher_executable"),
             "cpu_launcher_sha256": process.get("launcher_executable_sha256"),
         }
@@ -761,6 +773,12 @@ class SilexBackend(BackendAdapter):
                 "marked_target_cpu_ms": process.get("target_cpu_ms"),
                 "marked_target_wall_ms": process.get("target_wall_ms"),
                 "marked_process_affinity": process.get("effective_affinity"),
+                "marked_process_supervisor_affinity": process.get(
+                    "supervisor_affinity"
+                ),
+                "marked_process_supervisor_isolation_tier": process.get(
+                    "supervisor_isolation_tier"
+                ),
                 "cpu_launcher_executable": process.get("launcher_executable"),
                 "cpu_launcher_sha256": process.get("launcher_executable_sha256"),
                 "source": payload.get("source"),
@@ -800,6 +818,12 @@ class SilexBackend(BackendAdapter):
             "thread_count": _thread_count({}),
             "timing": {
                 "marked_process_affinity": process.get("effective_affinity"),
+                "marked_process_supervisor_affinity": process.get(
+                    "supervisor_affinity"
+                ),
+                "marked_process_supervisor_isolation_tier": process.get(
+                    "supervisor_isolation_tier"
+                ),
             },
             "cmd": process.get("cmd"),
             "stdout": process.get("stdout", ""),

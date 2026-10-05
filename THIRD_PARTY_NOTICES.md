@@ -19,7 +19,7 @@ independent or clean-room origin.
 ## PARI/GP source lineage
 
 The S-regulator computation in
-`src/silex_bench/sunit_backend.py:2306-2312` translates the identity
+`src/silex_bench/sunit_backend.py:2314-2320` translates the identity
 implemented by PARI/GP 2.17.3 in `src/basemath/bnfunits.c:203-234`, especially
 lines 213-228, and documented in `doc/usersch3.tex:20056-20071`: the ordinary
 regulator is multiplied by the S-class number and the logarithms of the norms

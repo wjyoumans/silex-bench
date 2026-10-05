@@ -1527,6 +1527,10 @@ def normalize_silex(
         or payload_object.get("timeout") is True,
         "process_wall_ms": process_payload.get("process_wall_ms"),
         "effective_affinity": process_payload.get("effective_affinity"),
+        "supervisor_affinity": process_payload.get("supervisor_affinity"),
+        "supervisor_isolation_tier": process_payload.get(
+            "supervisor_isolation_tier"
+        ),
         "launcher_executable": process_payload.get("launcher_executable"),
         "launcher_executable_sha256": process_payload.get(
             "launcher_executable_sha256"
@@ -2064,6 +2068,10 @@ quit
         "timeout": process.get("timeout") is True,
         "process_wall_ms": process.get("process_wall_ms"),
         "effective_affinity": process.get("effective_affinity"),
+        "supervisor_affinity": process.get("supervisor_affinity"),
+        "supervisor_isolation_tier": process.get(
+            "supervisor_isolation_tier"
+        ),
         "launcher_executable": process.get("launcher_executable"),
         "launcher_executable_sha256": process.get(
             "launcher_executable_sha256"
@@ -2436,6 +2444,10 @@ silex_compare_sunit(f)
         "timeout": process.get("timeout") is True,
         "process_wall_ms": process.get("process_wall_ms"),
         "effective_affinity": process.get("effective_affinity"),
+        "supervisor_affinity": process.get("supervisor_affinity"),
+        "supervisor_isolation_tier": process.get(
+            "supervisor_isolation_tier"
+        ),
         "launcher_executable": process.get("launcher_executable"),
         "launcher_executable_sha256": process.get(
             "launcher_executable_sha256"

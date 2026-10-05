@@ -306,6 +306,21 @@ any other failure at the moment it is raised: if the observation deadline has
 already passed and the target is still running, the row is recorded as a
 timeout. Both reads inspect the target's thread-group leader only.
 
+When a CPU was requested, each process result also records
+`supervisor_affinity` (the sorted CPU list the supervisor is pinned to) and
+`supervisor_isolation_tier`: 1 when the supervisor avoids the target CPU and
+its SMT siblings, 2 when it avoids the target CPU but shares its core, 3 when
+it shares the target CPU. Both are null when no CPU was requested. Backends
+copy them into per-sample `internal_timing` as
+`marked_process_supervisor_affinity` and
+`marked_process_supervisor_isolation_tier` (integrated S-unit rows use the
+unprefixed names). They are additive: ledgers written without them stay
+readable, the campaign format version is unchanged, and no export policy
+depends on the tier. During each marked process run the harness parent is also
+pinned to the supervisor's housekeeping CPUs and its original affinity is
+restored afterwards, including on failure; this changes no recorded field
+(`machine.available_affinity` is still the pre-pin set).
+
 Timeout enforcement is best effort at the margins. A deadline that passes
 while the harness is between steps (for example between the supervisor
 handshake and the first read) still gets one non-blocking observation of the

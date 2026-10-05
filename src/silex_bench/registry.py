@@ -380,6 +380,10 @@ class SUnitImplementation(ImplementationAdapter):
             "sunit_timing_ms": payload.get("sunit_timing_ms", {}),
             "component_timing_ms": payload.get("component_timing_ms", {}),
             "effective_affinity": payload.get("effective_affinity"),
+            "supervisor_affinity": payload.get("supervisor_affinity"),
+            "supervisor_isolation_tier": payload.get(
+                "supervisor_isolation_tier"
+            ),
             "launcher_executable": payload.get("launcher_executable"),
             "launcher_executable_sha256": payload.get(
                 "launcher_executable_sha256"

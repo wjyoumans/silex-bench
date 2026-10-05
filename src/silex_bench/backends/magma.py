@@ -339,6 +339,8 @@ def _timing(
     marked_target_cpu_ms: float | None,
     marked_target_wall_ms: float | None,
     marked_process_affinity: list[int] | None,
+    marked_process_supervisor_affinity: list[int] | None = None,
+    marked_process_supervisor_isolation_tier: int | None = None,
 ) -> dict[str, Any]:
     scopes = {
         "class_unit_proven": "class_and_unit_group_only",
@@ -364,6 +366,10 @@ def _timing(
         "marked_target_cpu_ms": marked_target_cpu_ms,
         "marked_target_wall_ms": marked_target_wall_ms,
         "marked_process_affinity": marked_process_affinity,
+        "marked_process_supervisor_affinity": marked_process_supervisor_affinity,
+        "marked_process_supervisor_isolation_tier": (
+            marked_process_supervisor_isolation_tier
+        ),
     }
     if operation in _CLASS_UNIT_OPERATIONS:
         timing["components_ms"] = {
@@ -588,6 +594,10 @@ quit;
                 marked_target_cpu_ms=marked_target_cpu_ms,
                 marked_target_wall_ms=marked_target_wall_ms,
                 marked_process_affinity=raw.get("effective_affinity"),
+                marked_process_supervisor_affinity=raw.get("supervisor_affinity"),
+                marked_process_supervisor_isolation_tier=raw.get(
+                    "supervisor_isolation_tier"
+                ),
             ),
         }
         payload["timing"]["cpu_launcher_executable"] = raw.get(
