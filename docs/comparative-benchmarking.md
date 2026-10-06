@@ -160,9 +160,11 @@ sample. What `reported` measures differs by backend:
 Limit: the Hecke count does not cover FLINT or Arb threading, which Hecke
 reaches through Nemo. Nemo exposes only a setter,
 `Nemo.flint_set_num_threads`, which raises an error unless Julia was started
-with `NEMO_THREADED=1`; the Nemo version inspected (its `src/Nemo.jl`
-and `docs/src/index.md`) has no getter, so Bench cannot query the FLINT pool
-size from Julia. Bench does not set `NEMO_THREADED` or call the setter, so
+with `NEMO_THREADED=1` (Nemo 0.56.0, the version in the default Julia 1.12
+environment: `src/Nemo.jl:465-469`, flag read at `src/Nemo.jl:438`,
+`docs/src/index.md:157-158`; Nemo 0.52.1 has the same setter at
+`src/Nemo.jl:433-437`). Neither version has a getter, so Bench cannot query
+the FLINT pool size from Julia. Bench does not set `NEMO_THREADED` or call the setter, so
 the Hecke record shows the Julia-visible pools only. Treat Hecke as
 single-threaded in FLINT by configuration, not by measurement, and state that
 when making a thread-count claim.
