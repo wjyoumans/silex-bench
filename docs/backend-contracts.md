@@ -131,9 +131,8 @@ version 3). Each engine's conditional route:
   `UnitGroup(O : GRH := true)`. The V2.28 handbook says the class group is
   correct under the GRH and that the unit computation has the same level of
   rigour. Magma reports no proof state, so the labels follow the call contract.
-  Magma was not run to confirm this route; smoke-check an imaginary quadratic
-  field, a real quadratic field and `x^3+x+200` against PARI before relying on
-  it.
+  See "Magma grh smoke check against PARI" below for a by-hand check of three
+  fields; it did not run the Bench harness.
 
 External adapters report `proof_complete: false` (no unconditional proof ran)
 and `conditional_result_complete: true` when the unit count was read back and
@@ -376,5 +375,7 @@ on all three fields, to the 38 digits PARI prints:
 | `x^3+x+200` | `[2]` | 297.83531565518937879358... | 1 |
 
 Both routes are conditional on the GRH, so the Magma `grh` labels (set by call
-contract in `magma.py`) match PARI's. This is evidence, not a decision: Magma
-grh mode stays off in the default configuration until the maintainer enables it.
+contract in `magma.py`) match PARI's. This is evidence for the route, not a gate: Magma
+grh is already wired into the opt-in `class_unit_grh` workload. The check ran
+by hand, not through the Bench harness, and its scratch scripts are not
+committed.
