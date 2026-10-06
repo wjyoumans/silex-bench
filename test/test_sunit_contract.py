@@ -1229,6 +1229,28 @@ class SUnitContractTests(unittest.TestCase):
             self.module.regulator_in_pari_convention("silex", result)
         )
 
+    def test_missing_conversion_evidence_fails_regulator_agreement(
+        self,
+    ) -> None:
+        row = self.module.load_field(
+            self.manifest_path, "cubic_x3_minus_2_empty_s"
+        )
+        for missing in ("s_class_order", "valuation_lattice_index"):
+            with self.subTest(missing=missing):
+                silex = normalized_result()
+                silex["regulator_midpoint"] = 3.25
+                silex["nonunit_rank"] = 1
+                silex["s_class_order"] = "1"
+                silex["valuation_lattice_index"] = "1"
+                del silex[missing]
+                pari = normalized_result("pari")
+                pari["regulator_midpoint"] = 3.25
+                agreement = self.module.build_agreement(
+                    {"silex": silex, "pari": pari}, row
+                )
+                self.assertFalse(agreement["regulator_agrees"])
+                self.assertFalse(agreement["success"])
+
     def test_agreement_binds_backend_slot_to_engine_identity(self) -> None:
         row = self.module.load_field(
             self.manifest_path,
