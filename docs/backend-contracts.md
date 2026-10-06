@@ -361,3 +361,20 @@ is retained but is not timing-eligible. Workload validation occurs before
 pairwise comparison. Pairwise agreement occurs before timing eligibility. No
 failure, malformed proof, disagreement, missing clock, or nonpositive clock can
 enter an absolute-runtime summary.
+
+## Magma grh smoke check against PARI
+
+Checked once, by hand, with Magma V2.28-27 (`ClassGroup(O : Proof := "GRH")`,
+`UnitGroup(O : GRH := true)`, `Regulator(O)`) and PARI `bnfinit(f, 1)` (no
+`bnfcertify`), one thread each, no timing. The class group and regulator agree
+on all three fields, to the 38 digits PARI prints:
+
+| Field | Class group | Regulator | Unit rank |
+| --- | --- | --- | --- |
+| `x^2-x+6` (disc -23) | `[3]` | 1 | 0 |
+| `x^2-79` | `[3]` | 5.07513474450480985978... | 1 |
+| `x^3+x+200` | `[2]` | 297.83531565518937879358... | 1 |
+
+Both routes are conditional on the GRH, so the Magma `grh` labels (set by call
+contract in `magma.py`) match PARI's. This is evidence, not a decision: Magma
+grh mode stays off in the default configuration until the maintainer enables it.
