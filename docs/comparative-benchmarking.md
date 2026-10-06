@@ -136,6 +136,37 @@ not timing-eligible. Use matching case and repetition identities for any
 subsequent paired analysis; current built-in reports contain absolute times,
 not speedup ratios.
 
+### Thread-count contract
+
+Every backend requests one engine thread and records a `thread_count` object
+(`requested`, `reported`, `matches_requested`, `source`). A complete result
+whose reported count is not 1 gets status `thread_contract` and is not a timing
+sample. What `reported` measures differs by backend:
+
+- Silex: the engine's own FLINT thread count, `engine_thread_count` from the
+  Silex payload (`silex.py:70-71`, source `silex_flint_get_num_threads`,
+  `silex.py:41`).
+- PARI/GP: `default(nbthreads)` after setting it to 1 (`pari.py:326-327`,
+  source `pari_default_nbthreads_runtime_query`, `pari.py:49`).
+- Magma: `GetNthreads()` after `SetNthreads(1)` (`magma.py:140-141`, source
+  `magma_getnthreads_runtime_query`, `magma.py:47`).
+- Hecke: the maximum of `Threads.nthreads()` and
+  `LinearAlgebra.BLAS.get_num_threads()`, taken in the ready program before the
+  timed target (`hecke.py:488-489`, source
+  `julia_nthreads_and_blas_runtime_query_max`, `hecke.py:50`). Julia is started
+  with `--threads=1` and `JULIA_NUM_THREADS`, `OMP_NUM_THREADS` and
+  `OPENBLAS_NUM_THREADS` set to 1 (`hecke.py:63-65`, `hecke.py:169`).
+
+Limit: the Hecke count does not cover FLINT or Arb threading, which Hecke
+reaches through Nemo. Nemo exposes only a setter,
+`Nemo.flint_set_num_threads`, which raises an error unless Julia was started
+with `NEMO_THREADED=1`; the Nemo version inspected (its `src/Nemo.jl`
+and `docs/src/index.md`) has no getter, so Bench cannot query the FLINT pool
+size from Julia. Bench does not set `NEMO_THREADED` or call the setter, so
+the Hecke record shows the Julia-visible pools only. Treat Hecke as
+single-threaded in FLINT by configuration, not by measurement, and state that
+when making a thread-count claim.
+
 ## Provenance and publication
 
 The campaign binds exact configuration/corpus bytes, overrides, package
