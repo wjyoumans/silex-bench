@@ -2510,6 +2510,36 @@ def manifest_matches(result: dict[str, Any], row: dict[str, Any]) -> bool:
     return all(actual.get(key) == value for key, value in row["expected"].items())
 
 
+def regulator_in_pari_convention(slot: str, result: dict[str, Any]) -> Any:
+    """Return ``regulator_midpoint`` in PARI's ``bnfsunit`` convention.
+
+    PARI and Hecke (as scripted here) report ``R h_S prod log N(P)``.  Silex
+    reports the S-unit lattice regulator ``R (h/h_S) prod log N(P)``, which
+    differs by ``h_S^2 / h``.  With ``h_S`` the S-class order and ``h/h_S`` the
+    valuation lattice index, the factor is ``s_class_order /
+    valuation_lattice_index``.  It is 1 for empty S (``nonunit_rank == 0``),
+    where every backend reports the ordinary regulator.  Invalid evidence
+    returns None so agreement fails closed.
+    """
+    value = result.get("regulator_midpoint")
+    if expected_engine_for_slot(slot) != "silex" or value is None:
+        return value
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return value
+    if result.get("nonunit_rank") == 0:
+        return value
+    order = result.get("s_class_order")
+    index = result.get("valuation_lattice_index")
+    if not canonical_positive_integer_text(order) or not (
+        canonical_positive_integer_text(index)
+    ):
+        return None
+    try:
+        return float(value) * (int(order) / int(index))
+    except OverflowError:
+        return None
+
+
 def build_agreement(backends: Any, row: Any) -> dict[str, Any]:
     backend_items = list(backends.items()) if type(backends) is dict else []
     backend_shapes_valid = bool(backend_items) and all(
@@ -2661,8 +2691,8 @@ def build_agreement(backends: Any, row: Any) -> dict[str, Any]:
         {json.dumps(value, sort_keys=True) for value in silex_hnf_descriptors}
     ) <= 1
     regulator_values = [
-        result["regulator_midpoint"]
-        for result in successful
+        regulator_in_pari_convention(slot, result)
+        for slot, result in successful_items
         if result.get("regulator_midpoint") is not None
     ]
     regulators: list[float] = []

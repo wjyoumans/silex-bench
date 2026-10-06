@@ -100,6 +100,28 @@ optional, but every present value must be a finite JSON number before regulator
 agreement can succeed.  `NaN` and either infinity fail agreement even when all
 selected backends report the same non-finite value.
 
+### S-regulator convention
+
+`regulator_midpoint` is stored as each backend reports it, and recorded results
+are never rewritten. The conventions differ:
+
+- PARI `bnfsunit` (`B[4]`) reports `R h_S prod log N(P)` (`bnfunits.c:217-233`).
+- Hecke has no S-regulator; the adapter script computes the same quantity,
+  `regulator(O) * order(Q) * prod log N(P)`, so it matches PARI's convention.
+- Magma declares S-unit workloads unsupported and reports none.
+- Silex (since T-130) reports the S-unit lattice regulator
+  `R (h/h_S) prod log N(P)` (Bernard and Roux-Langlois 2020, Prop. 2.2), which
+  equals PARI's value times `h/h_S^2`.
+
+Agreement compares in PARI's convention. `regulator_in_pari_convention` in
+`sunit_backend.py` multiplies Silex's value by `h_S^2/h`, computed exactly as
+`s_class_order / valuation_lattice_index` (`h_S` and `h/h_S`, both already
+reported and required to agree), and is the only place the factor is applied.
+For empty S (`nonunit_rank` 0) the factor is 1. Missing or invalid evidence
+makes regulator agreement fail. Worked examples: `Q(sqrt(-5))`, `S={P2}`:
+Silex `2 log 2`, PARI `log 2`; `Q(sqrt(10))`, `S={P3}`: Silex `3.99554`, PARI
+`1.99777`.
+
 For ordinary class/unit proof states, Silex must report `"proven"` for
 certification, class group, and unit group, and exactly `"verified"` for its
 native regulator proof. PARI reports `"proven"` for all four fields. Hecke must

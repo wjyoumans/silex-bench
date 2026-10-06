@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import sys
@@ -1178,6 +1179,55 @@ class SUnitContractTests(unittest.TestCase):
                 self.assertFalse(agreement["regulator_agrees"])
                 self.assertFalse(agreement["backend_results_agree"])
                 self.assertFalse(agreement["success"])
+
+    def test_silex_regulator_converts_to_pari_convention(self) -> None:
+        # (silex lattice regulator, h_S, h/h_S, PARI bnfsunit value)
+        cases = {
+            "Q(sqrt-5) S={P2}": (2 * math.log(2), "1", "2", math.log(2)),
+            "Q(sqrt10) S={P3}": (3.99553, "1", "2", 3.99553 / 2),
+            "h = h_S^2, Q(sqrt-17) S={P2}": (math.log(4), "2", "2", math.log(4)),
+            "h = h_S = 1": (5.5, "1", "1", 5.5),
+        }
+        for name, (silex_value, h_s, index, pari_value) in cases.items():
+            with self.subTest(name):
+                result = normalized_result()
+                result["regulator_midpoint"] = silex_value
+                result["s_class_order"] = h_s
+                result["valuation_lattice_index"] = index
+                result["nonunit_rank"] = 1
+                converted = self.module.regulator_in_pari_convention(
+                    "silex", result
+                )
+                self.assertAlmostEqual(converted, pari_value, places=12)
+                pari = normalized_result("pari")
+                pari["regulator_midpoint"] = pari_value
+                self.assertEqual(
+                    self.module.regulator_in_pari_convention("pari", pari),
+                    pari_value,
+                )
+                row = self.module.load_field(
+                    self.manifest_path, "cubic_x3_minus_2_empty_s"
+                )
+                agreement = self.module.build_agreement(
+                    {"silex": result, "pari": pari}, row
+                )
+                self.assertTrue(agreement["regulator_agrees"])
+
+    def test_silex_regulator_is_unchanged_for_empty_s_and_bad_evidence(
+        self,
+    ) -> None:
+        result = normalized_result()
+        result["regulator_midpoint"] = 3.25
+        result["nonunit_rank"] = 0
+        result["s_class_order"] = "3"
+        self.assertEqual(
+            self.module.regulator_in_pari_convention("silex", result), 3.25
+        )
+        result["nonunit_rank"] = 1
+        result["valuation_lattice_index"] = "0"
+        self.assertIsNone(
+            self.module.regulator_in_pari_convention("silex", result)
+        )
 
     def test_agreement_binds_backend_slot_to_engine_identity(self) -> None:
         row = self.module.load_field(
