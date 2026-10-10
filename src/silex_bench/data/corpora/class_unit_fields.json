@@ -2437,11 +2437,11 @@
       "expected_class_invariants": [3],
       "expected_unit_rank": 2,
       "timeout_seconds": 600,
-      "expected_success": false,
-      "status": "family_unmeasured",
+      "expected_success": true,
+      "status": "family_measured",
       "benchmark_role": "family",
       "family": "simplest_cubic",
-      "source": "Family spot-test (Shanks a=6); PARI/GP 2.17.4 (/usr/bin/gp, 1 thread, nice 19) bnfinit(pol,1) then bnfcertify(bnf)=1 on 2026-10-03 (certified), total wall 2 s (2 s resolution) of which bnfcertify 0 ms; h=3, cyc=[3], regulator=4.2016900422410957093939; not yet measured on Silex (expected_success false pending T-099)"
+      "source": "Family spot-test (Shanks a=6); PARI/GP 2.17.4 (/usr/bin/gp, 1 thread, nice 19) bnfinit(pol,1) then bnfcertify(bnf)=1 on 2026-10-03 (certified), total wall 2 s (2 s resolution) of which bnfcertify 0 ms; h=3, cyc=[3], regulator=4.2016900422410957093939; Silex proven mode (silex-class-unit-instance, Release build of silex main c2800a5, 2026-10-10) succeeds with certification_status proven and the expected class order and unit rank, transaction 13.3 ms (single run, loaded host); previously unproven on Silex"
     },
     {
       "id": "simplest_cubic_a8",
@@ -2456,11 +2456,11 @@
       "expected_class_invariants": [],
       "expected_unit_rank": 2,
       "timeout_seconds": 600,
-      "expected_success": false,
-      "status": "family_unmeasured",
+      "expected_success": true,
+      "status": "family_measured",
       "benchmark_role": "family",
       "family": "simplest_cubic",
-      "source": "Family spot-test (Shanks a=8); PARI/GP 2.17.4 (/usr/bin/gp, 1 thread, nice 19) bnfinit(pol,1) then bnfcertify(bnf)=1 on 2026-10-03 (certified), total wall 2 s (2 s resolution) of which bnfcertify 0 ms; h=1, cyc=[], regulator=5.1675818725062111238987; not yet measured on Silex (expected_success false pending T-099)"
+      "source": "Family spot-test (Shanks a=8); PARI/GP 2.17.4 (/usr/bin/gp, 1 thread, nice 19) bnfinit(pol,1) then bnfcertify(bnf)=1 on 2026-10-03 (certified), total wall 2 s (2 s resolution) of which bnfcertify 0 ms; h=1, cyc=[], regulator=5.1675818725062111238987; Silex proven mode (silex-class-unit-instance, Release build of silex main c2800a5, 2026-10-10) succeeds with certification_status proven and the expected class order and unit rank, transaction 6.88 ms (single run, loaded host); previously unproven on Silex"
     },
     {
       "id": "simplest_cubic_a10",
@@ -2475,11 +2475,11 @@
       "expected_class_invariants": [],
       "expected_unit_rank": 2,
       "timeout_seconds": 600,
-      "expected_success": false,
-      "status": "family_unmeasured",
+      "expected_success": true,
+      "status": "family_measured",
       "benchmark_role": "family",
       "family": "simplest_cubic",
-      "source": "Family spot-test (Shanks a=10); PARI/GP 2.17.4 (/usr/bin/gp, 1 thread, nice 19) bnfinit(pol,1) then bnfcertify(bnf)=1 on 2026-10-03 (certified), total wall 2 s (2 s resolution) of which bnfcertify 1 ms; h=1, cyc=[], regulator=6.0386572555312630771126; not yet measured on Silex (expected_success false pending T-099)"
+      "source": "Family spot-test (Shanks a=10); PARI/GP 2.17.4 (/usr/bin/gp, 1 thread, nice 19) bnfinit(pol,1) then bnfcertify(bnf)=1 on 2026-10-03 (certified), total wall 2 s (2 s resolution) of which bnfcertify 1 ms; h=1, cyc=[], regulator=6.0386572555312630771126; Silex proven mode (silex-class-unit-instance, Release build of silex main c2800a5, 2026-10-10) succeeds with certification_status proven and the expected class order and unit rank, transaction 12.2 ms (single run, loaded host); previously unproven on Silex"
     },
     {
       "id": "simplest_cubic_a12",

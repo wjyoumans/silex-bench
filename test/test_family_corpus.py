@@ -61,11 +61,17 @@ class FamilyCorpusTests(unittest.TestCase):
             with self.subTest(row=row["id"]):
                 self.assertIn(row["family"], FAMILIES)
                 self.assertEqual(row["benchmark_role"], "family")
-                self.assertEqual(row["status"], "family_unmeasured")
-                # Not yet measured on Silex: pending the family measurement task.
-                self.assertIs(row["expected_success"], False)
                 source = row["source"]
-                self.assertIn("T-099", source)
+                if row["status"] == "family_measured":
+                    # Measured on Silex in proven mode: success is expected.
+                    self.assertIs(row["expected_success"], True)
+                    self.assertIn("certification_status proven", source)
+                    self.assertNotIn("T-099", source)
+                else:
+                    # Not yet measured on Silex: pending the family measurement task.
+                    self.assertEqual(row["status"], "family_unmeasured")
+                    self.assertIs(row["expected_success"], False)
+                    self.assertIn("T-099", source)
                 self.assertTrue(
                     any(key in source for key in ("PARI/GP 2.17.4", "LMFDB", "Miller")),
                     source,
@@ -130,8 +136,13 @@ class FamilyCorpusTests(unittest.TestCase):
                 self.assertTrue(any(tag.startswith("family:") for tag in case.tags))
                 for tag in ("publication", "scale", "dev", "quick"):
                     self.assertNotIn(tag, case.tags)
-                self.assertEqual(case.expected_status, "failure")
-                self.assertFalse(case.performance_eligible)
+                measured = {row["id"]: row for row in _family_rows()}[case.id]
+                self.assertEqual(
+                    case.expected_status,
+                    "success" if measured["status"] == "family_measured" else "failure",
+                )
+                # Eligibility follows expected_success; profile tags stay excluded.
+                self.assertIs(case.performance_eligible, measured["expected_success"])
 
 
 if __name__ == "__main__":
