@@ -376,9 +376,9 @@ def _field_tags(row: Mapping[str, Any]) -> set[str]:
     status = row.get("status")
     family = row.get("family")
     if isinstance(family, str) and family:
-        # Family spot-test rows are unmeasured reference rows: tagged by
-        # family only, never selected by the publication/scale/dev/quick
-        # profiles until a measurement promotes them.
+        # Family spot-test rows are tagged by family only, so the family tag
+        # always keeps them out of the publication, scale, dev and quick
+        # profiles, whether or not a row has been measured.
         tags = {"all", "number-field", "family", f"family:{family}"}
         if isinstance(role, str) and role:
             tags.add(role)
