@@ -2342,11 +2342,11 @@
       "expected_class_invariants": [],
       "expected_unit_rank": 2,
       "timeout_seconds": 600,
-      "expected_success": false,
-      "status": "family_unmeasured",
+      "expected_success": true,
+      "status": "family_measured",
       "benchmark_role": "family",
       "family": "simplest_cubic",
-      "source": "Family spot-test (Shanks a=0); PARI/GP 2.17.4 (/usr/bin/gp, 1 thread, nice 19) bnfinit(pol,1) then bnfcertify(bnf)=1 on 2026-10-03 (certified), total wall 2 s (2 s resolution) of which bnfcertify 0 ms; h=1, cyc=[], regulator=0.8492874506461925286447; not yet measured on Silex (expected_success false pending T-099)"
+      "source": "Family spot-test (Shanks a=0); PARI/GP 2.17.4 (/usr/bin/gp, 1 thread, nice 19) bnfinit(pol,1) then bnfcertify(bnf)=1 on 2026-10-03 (certified), total wall 2 s (2 s resolution) of which bnfcertify 0 ms; h=1, cyc=[], regulator=0.8492874506461925286447; Silex proven mode (silex-class-unit-instance, Release build of silex main 43e3044, 2026-10-12) succeeds with certification_status proven and the expected class order and unit rank, transaction 3.74 ms (single run, loaded host); previously unproven on Silex"
     },
     {
       "id": "simplest_cubic_a1",
@@ -2361,11 +2361,11 @@
       "expected_class_invariants": [],
       "expected_unit_rank": 2,
       "timeout_seconds": 600,
-      "expected_success": false,
-      "status": "family_unmeasured",
+      "expected_success": true,
+      "status": "family_measured",
       "benchmark_role": "family",
       "family": "simplest_cubic",
-      "source": "Family spot-test (Shanks a=1); PARI/GP 2.17.4 (/usr/bin/gp, 1 thread, nice 19) bnfinit(pol,1) then bnfcertify(bnf)=1 on 2026-10-03 (certified), total wall 2 s (2 s resolution) of which bnfcertify 1 ms; h=1, cyc=[], regulator=1.3650498675943825956350; not yet measured on Silex (expected_success false pending T-099)"
+      "source": "Family spot-test (Shanks a=1); PARI/GP 2.17.4 (/usr/bin/gp, 1 thread, nice 19) bnfinit(pol,1) then bnfcertify(bnf)=1 on 2026-10-03 (certified), total wall 2 s (2 s resolution) of which bnfcertify 1 ms; h=1, cyc=[], regulator=1.3650498675943825956350; Silex proven mode (silex-class-unit-instance, Release build of silex main 43e3044, 2026-10-12) succeeds with certification_status proven and the expected class order and unit rank, transaction 7.16 ms (single run, loaded host); previously unproven on Silex"
     },
     {
       "id": "simplest_cubic_a2",
@@ -2380,11 +2380,11 @@
       "expected_class_invariants": [],
       "expected_unit_rank": 2,
       "timeout_seconds": 600,
-      "expected_success": false,
-      "status": "family_unmeasured",
+      "expected_success": true,
+      "status": "family_measured",
       "benchmark_role": "family",
       "family": "simplest_cubic",
-      "source": "Family spot-test (Shanks a=2); PARI/GP 2.17.4 (/usr/bin/gp, 1 thread, nice 19) bnfinit(pol,1) then bnfcertify(bnf)=1 on 2026-10-03 (certified), total wall 2 s (2 s resolution) of which bnfcertify 0 ms; h=1, cyc=[], regulator=1.9521566965073146821084; not yet measured on Silex (expected_success false pending T-099)"
+      "source": "Family spot-test (Shanks a=2); PARI/GP 2.17.4 (/usr/bin/gp, 1 thread, nice 19) bnfinit(pol,1) then bnfcertify(bnf)=1 on 2026-10-03 (certified), total wall 2 s (2 s resolution) of which bnfcertify 0 ms; h=1, cyc=[], regulator=1.9521566965073146821084; Silex proven mode (silex-class-unit-instance, Release build of silex main 43e3044, 2026-10-12) succeeds with certification_status proven and the expected class order and unit rank, transaction 7.44 ms (single run, loaded host); previously unproven on Silex"
     },
     {
       "id": "simplest_cubic_a4",
@@ -2399,11 +2399,11 @@
       "expected_class_invariants": [],
       "expected_unit_rank": 2,
       "timeout_seconds": 600,
-      "expected_success": false,
-      "status": "family_unmeasured",
+      "expected_success": true,
+      "status": "family_measured",
       "benchmark_role": "family",
       "family": "simplest_cubic",
-      "source": "Family spot-test (Shanks a=4); PARI/GP 2.17.4 (/usr/bin/gp, 1 thread, nice 19) bnfinit(pol,1) then bnfcertify(bnf)=1 on 2026-10-03 (certified), total wall 2 s (2 s resolution) of which bnfcertify 0 ms; h=1, cyc=[], regulator=3.1262301909149870421610; not yet measured on Silex (expected_success false pending T-099)"
+      "source": "Family spot-test (Shanks a=4); PARI/GP 2.17.4 (/usr/bin/gp, 1 thread, nice 19) bnfinit(pol,1) then bnfcertify(bnf)=1 on 2026-10-03 (certified), total wall 2 s (2 s resolution) of which bnfcertify 0 ms; h=1, cyc=[], regulator=3.1262301909149870421610; Silex proven mode (silex-class-unit-instance, Release build of silex main 43e3044, 2026-10-12) succeeds with certification_status proven and the expected class order and unit rank, transaction 7.11 ms (single run, loaded host); previously unproven on Silex"
     },
     {
       "id": "simplest_cubic_a5",
@@ -2418,11 +2418,11 @@
       "expected_class_invariants": [],
       "expected_unit_rank": 2,
       "timeout_seconds": 600,
-      "expected_success": false,
-      "status": "family_unmeasured",
+      "expected_success": true,
+      "status": "family_measured",
       "benchmark_role": "family",
       "family": "simplest_cubic",
-      "source": "Family spot-test (Shanks a=5); PARI/GP 2.17.4 (/usr/bin/gp, 1 thread, nice 19) bnfinit(pol,1) then bnfcertify(bnf)=1 on 2026-10-03 (certified), total wall 2 s (2 s resolution) of which bnfcertify 0 ms; h=1, cyc=[], regulator=0.5254546821225723883388; not yet measured on Silex (expected_success false pending T-099)"
+      "source": "Family spot-test (Shanks a=5); PARI/GP 2.17.4 (/usr/bin/gp, 1 thread, nice 19) bnfinit(pol,1) then bnfcertify(bnf)=1 on 2026-10-03 (certified), total wall 2 s (2 s resolution) of which bnfcertify 0 ms; h=1, cyc=[], regulator=0.5254546821225723883388; Silex proven mode (silex-class-unit-instance, Release build of silex main 43e3044, 2026-10-12) succeeds with certification_status proven and the expected class order and unit rank, transaction 6.05 ms (single run, loaded host); previously unproven on Silex"
     },
     {
       "id": "simplest_cubic_a6",
