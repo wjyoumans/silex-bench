@@ -831,7 +831,8 @@ def _warm_up_case(
     Each round invokes every selected, available backend once in the fixed
     plan order, so all engines get the same number of warm-up invocations.
     Rounds repeat until `warmup_seconds` of wall time has elapsed (at most
-    WARMUP_MAX_ROUNDS). Results are discarded, never ledgered or compared.
+    WARMUP_MAX_ROUNDS). Results are discarded, never ledgered or compared. No round starts once
+    the campaign budget is spent; a case with nothing to run gets no record.
     """
     seconds = float(plan.execution.get("warmup_seconds", 0.0))
     if seconds <= 0:
@@ -846,26 +847,35 @@ def _warm_up_case(
         return
     begin = time.monotonic()
     rounds = 0
+    invocations = 0
     while rounds < WARMUP_MAX_ROUNDS:
+        if budget is not None and time.monotonic() - started >= float(budget):
+            break
         for index, backend in enumerate(runnable):
-            if budget is not None and time.monotonic() - started >= float(budget):
-                break
-            plan.registry.backends[backend].implementations[case.workload].run(
-                case,
-                repetition=0,
-                order_index=index,
-                warmup=None,
-                context=context,
-                contract=plan.registry.workloads[case.workload],
-            )
+            # Warm-up is best-effort: a failing engine must not abort the
+            # campaign before any timed row exists. Results are discarded.
+            try:
+                plan.registry.backends[backend].implementations[case.workload].run(
+                    case,
+                    repetition=0,
+                    order_index=index,
+                    warmup=None,
+                    context=context,
+                    contract=plan.registry.workloads[case.workload],
+                )
+            except Exception:
+                pass
+            invocations += 1
         rounds += 1
         if time.monotonic() - begin >= seconds:
             break
+    if rounds == 0:
+        return
     record = {
         "case_key": case.key,
         "backends": runnable,
         "rounds": rounds,
-        "invocations": rounds * len(runnable),
+        "invocations": invocations,
         "elapsed_seconds": round(time.monotonic() - begin, 3),
         "requested_seconds": seconds,
     }
@@ -912,9 +922,14 @@ def run_campaign(
                     timeout_seconds=timeout_seconds,
                     timeout_source=timeout_source,
                 )
-                _warm_up_case(
-                    plan, case, selected, by_probe, case_context, run_dir, started, budget
-                )
+                if not all(
+                    ledger.has_observation(case.key, backend, repetition)
+                    for repetition in range(int(plan.execution["repetitions"]))
+                    for backend in selected
+                ):
+                    _warm_up_case(
+                        plan, case, selected, by_probe, case_context, run_dir, started, budget
+                    )
                 for repetition in range(int(plan.execution["repetitions"])):
                     order = _backend_order(case, repetition, selected)
                     for order_index, backend in enumerate(order):

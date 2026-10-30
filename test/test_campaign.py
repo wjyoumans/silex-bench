@@ -540,7 +540,7 @@ class CampaignTests(unittest.TestCase):
         self.assertEqual(len(snapshot["observations"]), 4)
         self.assertEqual(len(snapshot["timing_samples"]), 4)
 
-    def test_zero_warmup_and_correctness_mode_skip_warmup(self) -> None:
+    def test_zero_warmup_skips_warmup(self) -> None:
         profile = ProfileConfig(**{**self.profile.__dict__, "warmup_seconds": 0.0})
         plan = build_plan(
             self.root, self.suite, profile, ToolConfig(None, {}, None),
@@ -548,6 +548,130 @@ class CampaignTests(unittest.TestCase):
         )
         run_campaign(plan, self.root / "cold-run")
         self.assertFalse((self.root / "cold-run" / "warmup.jsonl").exists())
+
+    def test_correctness_mode_skips_default_warmup(self) -> None:
+        profile = ProfileConfig(**{**self.profile.__dict__, "warmup_seconds": 0.5})
+        plan = build_plan(
+            self.root, self.suite, profile, ToolConfig(None, {}, None),
+            RunOverrides(), fake_registry(), performance=False,
+        )
+        self.assertEqual(plan.execution["warmup_seconds"], 0.0)
+        run_campaign(plan, self.root / "check-run")
+        self.assertFalse((self.root / "check-run" / "warmup.jsonl").exists())
+
+    def test_warmup_stops_at_budget_and_counts_real_invocations(self) -> None:
+        from silex_bench_test_support import FakeImplementation
+
+        clock = [0.0]
+        calls: list[str] = []
+        original = FakeImplementation.run
+
+        def ticking(this, case, **kwargs):
+            calls.append(this.backend)
+            clock[0] += 1.0
+            return original(this, case, **kwargs)
+
+        profile = ProfileConfig(
+            **{**self.profile.__dict__, "warmup_seconds": 100.0, "budget_seconds": 2.5}
+        )
+        plan = build_plan(
+            self.root, self.suite, profile, ToolConfig(None, {}, None),
+            RunOverrides(), fake_registry(), performance=True,
+        )
+        fake_time = types.SimpleNamespace(
+            monotonic=lambda: clock[0], strftime=__import__("time").strftime
+        )
+        run_dir = self.root / "budget-run"
+        with mock.patch.object(FakeImplementation, "run", ticking), mock.patch(
+            "silex_bench.campaign.time", fake_time
+        ):
+            snapshot = run_campaign(plan, run_dir)
+        record = json.loads((run_dir / "warmup.jsonl").read_text().splitlines()[0])
+        self.assertEqual(record["rounds"], 2)
+        self.assertEqual(record["invocations"], 4)
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(snapshot["state"], "budget_exhausted")
+        self.assertEqual(snapshot["observations"], [])
+
+    def test_resume_of_fully_ledgered_case_does_not_rewarm(self) -> None:
+        from silex_bench_test_support import FakeImplementation
+
+        profile = ProfileConfig(**{**self.profile.__dict__, "warmup_seconds": 0.02})
+        plan = build_plan(
+            self.root, self.suite, profile, ToolConfig(None, {}, None),
+            RunOverrides(), fake_registry(), performance=True,
+        )
+        run_dir = self.root / "resume-warm"
+        run_campaign(plan, run_dir)
+        before = (run_dir / "warmup.jsonl").read_text()
+        calls: list[str] = []
+        original = FakeImplementation.run
+
+        def counting(this, case, **kwargs):
+            calls.append(this.backend)
+            return original(this, case, **kwargs)
+
+        with mock.patch.object(FakeImplementation, "run", counting):
+            run_campaign(plan, run_dir, resume=True)
+        self.assertEqual(calls, [])
+        self.assertEqual((run_dir / "warmup.jsonl").read_text(), before)
+
+    def test_failing_warmup_does_not_change_timed_rows(self) -> None:
+        import dataclasses
+
+        from silex_bench import campaign
+        from silex_bench.contracts import ObservationStatus
+        from silex_bench_test_support import FakeImplementation
+
+        original = FakeImplementation.run
+        warm = [False]
+        warm_calls: list[str] = []
+
+        def flaky(this, case, **kwargs):
+            if not warm[0]:
+                return original(this, case, **kwargs)
+            warm_calls.append(this.backend)
+            if this.backend == "silex":
+                raise RuntimeError("warm-up crash")
+            return dataclasses.replace(
+                original(this, case, **kwargs),
+                status=ObservationStatus.TIMEOUT,
+                success=False,
+                timeout=True,
+            )
+
+        real_warm = campaign._warm_up_case
+
+        def flagged(*args, **kwargs):
+            warm[0] = True
+            try:
+                return real_warm(*args, **kwargs)
+            finally:
+                warm[0] = False
+
+        def shape(snapshot):
+            return (
+                [
+                    (r["backend"], r["repetition"], r["status"], r["success"], r["target_wall_ns"])
+                    for r in snapshot["observations"]
+                ],
+                [(r["status"], r["success"]) for r in snapshot["agreements"]],
+                len(snapshot["timing_samples"]),
+                snapshot["state"],
+            )
+
+        reference = run_campaign(self.plan, self.root / "ref-run")
+        profile = ProfileConfig(**{**self.profile.__dict__, "warmup_seconds": 0.02})
+        plan = build_plan(
+            self.root, self.suite, profile, ToolConfig(None, {}, None),
+            RunOverrides(), fake_registry(), performance=True,
+        )
+        with mock.patch.object(FakeImplementation, "run", flaky), mock.patch.object(
+            campaign, "_warm_up_case", flagged
+        ):
+            snapshot = run_campaign(plan, self.root / "flaky-run")
+        self.assertTrue(warm_calls)
+        self.assertEqual(shape(snapshot), shape(reference))
 
     def test_resume_is_idempotent_and_report_is_immutable(self) -> None:
         run_dir = self.root / "run"
