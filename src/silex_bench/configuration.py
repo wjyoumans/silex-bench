@@ -32,6 +32,7 @@ _PROFILE_KEYS = {
     "backend_exclusions",
     "repetitions",
     "jit_repetitions",
+    "warmup_seconds",
     "timeout_seconds",
     "budget_seconds",
     "cpu",
@@ -102,6 +103,7 @@ class ProfileConfig:
     metrics: dict[str, tuple[float | None, float | None]]
     sha256: str
     backend_exclusions: tuple[BackendExclusion, ...] = ()
+    warmup_seconds: float = 0.5
 
 
 @dataclasses.dataclass(frozen=True)
@@ -361,6 +363,11 @@ def load_profile(path: Path) -> ProfileConfig:
         raise ValueError(
             "profile.jit_repetitions currently supports only zero or one"
         )
+    warmup_raw = payload.get("warmup_seconds", 0.5)
+    warmup_seconds = (
+        0.0 if warmup_raw == 0 and not isinstance(warmup_raw, bool)
+        else _positive_number(warmup_raw, "profile.warmup_seconds")
+    )
     timeout = _positive_number(payload.get("timeout_seconds", 60), "profile.timeout_seconds")
     budget_raw = payload.get("budget_seconds")
     budget = None if budget_raw is None else _positive_number(budget_raw, "profile.budget_seconds")
@@ -415,6 +422,7 @@ def load_profile(path: Path) -> ProfileConfig:
         backend_exclusions=tuple(backend_exclusions),
         repetitions=repetitions,
         jit_repetitions=jit_repetitions,
+        warmup_seconds=warmup_seconds,
         timeout_seconds=timeout,
         budget_seconds=budget,
         cpu=cpu,
@@ -473,6 +481,7 @@ def effective_execution(profile: ProfileConfig, overrides: RunOverrides) -> dict
         ],
         "repetitions": repetitions,
         "jit_repetitions": profile.jit_repetitions,
+        "warmup_seconds": profile.warmup_seconds,
         "timeout_seconds": (
             profile.timeout_seconds
             if overrides.timeout_seconds is None

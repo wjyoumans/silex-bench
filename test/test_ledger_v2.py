@@ -215,6 +215,7 @@ def build_fixture_plan(
         require_clean_sources=False,
         metrics={},
         sha256="profile-fixture",
+        warmup_seconds=0.0,
     )
     return build_plan(
         root,

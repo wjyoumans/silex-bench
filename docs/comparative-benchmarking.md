@@ -89,6 +89,20 @@ slice while retaining the profile's other filters and execution limits.
 Use `--timeout` for the per-observation deadline, `--budget` for the campaign
 budget, and `--repetitions` for repeated observations.
 
+Performance campaigns warm up before each case's timed repetitions. On a
+powersave CPU governor the first repetitions after a pause can run about 1.4x
+slower with identical instruction counts, so the runner first executes
+untimed rounds, each invoking every selected available engine once in plan
+order, until the profile's `warmup_seconds` (default 0.5; `0` disables) of wall
+time has elapsed, at most 20 rounds. Every engine therefore gets the same
+number of warm-up invocations. Warm-up results are discarded: they are never
+ledgered, compared, or reported. The setting is recorded as
+`plan.execution.warmup_seconds`, and the rounds actually run per case are
+appended to `warmup.jsonl` in the run directory (informational; not part of
+the ledger or report rows). Correctness-mode runs do not warm up. Runs
+started before this option existed lack the key and are not warmed up on
+resume.
+
 The suite's required pair is normally Silex/PARI. When choosing another pair,
 set `--require-pair CANDIDATE:BASELINE` explicitly. Use
 `--require-all-adapters` when every selected declared capability is a hard

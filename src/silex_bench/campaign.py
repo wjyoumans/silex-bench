@@ -190,6 +190,7 @@ def build_plan(
             **execution,
             "repetitions": 1,
             "jit_repetitions": 0,
+            "warmup_seconds": 0.0,
             "publication": False,
         }
     materialized = load_cases(suite.corpora, selected_workloads)
@@ -812,6 +813,66 @@ def _strict_success(snapshot: dict[str, Any], plan: CampaignPlan) -> bool:
     return True
 
 
+WARMUP_MAX_ROUNDS = 20
+
+
+def _warm_up_case(
+    plan: CampaignPlan,
+    case: Case,
+    selected: tuple[str, ...],
+    by_probe: Mapping[str, Any],
+    context: InvocationContext,
+    run_dir: Path,
+    started: float,
+    budget: Any,
+) -> None:
+    """Run untimed rounds so the CPU reaches steady clocks before timed reps.
+
+    Each round invokes every selected, available backend once in the fixed
+    plan order, so all engines get the same number of warm-up invocations.
+    Rounds repeat until `warmup_seconds` of wall time has elapsed (at most
+    WARMUP_MAX_ROUNDS). Results are discarded, never ledgered or compared.
+    """
+    seconds = float(plan.execution.get("warmup_seconds", 0.0))
+    if seconds <= 0:
+        return
+    runnable = [
+        backend
+        for backend in selected
+        if by_probe[backend].available
+        and case.workload in plan.registry.backends[backend].implementations
+    ]
+    if not runnable:
+        return
+    begin = time.monotonic()
+    rounds = 0
+    while rounds < WARMUP_MAX_ROUNDS:
+        for index, backend in enumerate(runnable):
+            if budget is not None and time.monotonic() - started >= float(budget):
+                break
+            plan.registry.backends[backend].implementations[case.workload].run(
+                case,
+                repetition=0,
+                order_index=index,
+                warmup=None,
+                context=context,
+                contract=plan.registry.workloads[case.workload],
+            )
+        rounds += 1
+        if time.monotonic() - begin >= seconds:
+            break
+    record = {
+        "case_key": case.key,
+        "backends": runnable,
+        "rounds": rounds,
+        "invocations": rounds * len(runnable),
+        "elapsed_seconds": round(time.monotonic() - begin, 3),
+        "requested_seconds": seconds,
+    }
+    with (run_dir / "warmup.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, sort_keys=True) + "\n")
+
+
 def run_campaign(
     plan: CampaignPlan,
     run_dir: Path,
@@ -850,6 +911,9 @@ def run_campaign(
                     context,
                     timeout_seconds=timeout_seconds,
                     timeout_source=timeout_source,
+                )
+                _warm_up_case(
+                    plan, case, selected, by_probe, case_context, run_dir, started, budget
                 )
                 for repetition in range(int(plan.execution["repetitions"])):
                     order = _backend_order(case, repetition, selected)

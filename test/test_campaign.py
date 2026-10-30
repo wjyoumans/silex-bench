@@ -507,6 +507,48 @@ class CampaignTests(unittest.TestCase):
         with RunLedger(run_dir) as ledger:
             self.assertEqual(ledger.state(), "complete")
 
+    def test_warmup_runs_every_engine_untimed_before_timed_repetitions(self) -> None:
+        from silex_bench.contracts import Case  # noqa: F401
+        from silex_bench_test_support import FakeImplementation
+
+        calls: list[tuple[str, int]] = []
+        original = FakeImplementation.run
+
+        def counting(this, case, **kwargs):
+            calls.append((this.backend, kwargs["repetition"]))
+            return original(this, case, **kwargs)
+
+        profile = ProfileConfig(**{**self.profile.__dict__, "warmup_seconds": 0.05})
+        plan = build_plan(
+            self.root, self.suite, profile, ToolConfig(None, {}, None),
+            RunOverrides(), fake_registry(), performance=True,
+        )
+        self.assertEqual(plan.execution["warmup_seconds"], 0.05)
+        run_dir = self.root / "warm-run"
+        with mock.patch.object(FakeImplementation, "run", counting):
+            snapshot = run_campaign(plan, run_dir)
+        record = json.loads((run_dir / "warmup.jsonl").read_text().splitlines()[0])
+        rounds = record["rounds"]
+        self.assertGreaterEqual(rounds, 1)
+        self.assertEqual(record["backends"], ["silex", "pari"])
+        warm = calls[: rounds * 2]
+        timed = calls[rounds * 2 :]
+        self.assertEqual(len(timed), 4)
+        for backend in ("silex", "pari"):
+            self.assertEqual(sum(1 for b, _ in warm if b == backend), rounds)
+        # Timed rows hold exactly the planned repetitions, none from warm-up.
+        self.assertEqual(len(snapshot["observations"]), 4)
+        self.assertEqual(len(snapshot["timing_samples"]), 4)
+
+    def test_zero_warmup_and_correctness_mode_skip_warmup(self) -> None:
+        profile = ProfileConfig(**{**self.profile.__dict__, "warmup_seconds": 0.0})
+        plan = build_plan(
+            self.root, self.suite, profile, ToolConfig(None, {}, None),
+            RunOverrides(), fake_registry(), performance=True,
+        )
+        run_campaign(plan, self.root / "cold-run")
+        self.assertFalse((self.root / "cold-run" / "warmup.jsonl").exists())
+
     def test_resume_is_idempotent_and_report_is_immutable(self) -> None:
         run_dir = self.root / "run"
         first = run_campaign(self.plan, run_dir)
