@@ -1661,6 +1661,10 @@ time.sleep(2)
         second EOF, which the harness rightly reports as a timeout: an exit
         counts only when every stream was already at EOF.
         """
+        try:
+            os.close(os.pidfd_open(os.getpid()))
+        except (AttributeError, OSError) as error:
+            self.skipTest(f"pidfd_open is unavailable: {error}")
         lag = [0.0]
         supervisor: dict[str, Any] = {}
         real_popen = process_module._supervised_popen
