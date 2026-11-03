@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import random
+import select
 import shutil
 import signal
 import stat
@@ -927,11 +928,15 @@ sys.stdin.readline()
                 self.assertEqual(pending, unterminated)
 
     def test_marked_process_rejects_target_marker_before_dispatch(self) -> None:
+        # One write puts both lines in the pipe together, so the harness
+        # sees the target marker before dispatch whenever it wakes. With two
+        # writes it could read READY alone, dispatch, and then report the
+        # late bare TARGET line as an invalid target marker instead.
         child = """
+import os
 import sys
 import time
-print("READY", flush=True)
-print("TARGET", flush=True)
+os.write(1, b"READY\\nTARGET\\n")
 sys.stdin.readline()
 sys.stdin.readline()
 time.sleep(0.25)
@@ -1637,17 +1642,39 @@ time.sleep(2)
         self.assertIn("ready input", result["error"])
         self.assertNotIn("timed out", result["error"])
 
-    def _lagging_harness(self) -> tuple[Any, Any, list[float]]:
-        """Stand-ins for the process module's ``os`` and ``time`` that simulate
-        harness scheduling lag deterministically.
+    def _lagging_harness(self) -> tuple[Any, Any, Any, list[float]]:
+        """Stand-ins for the process module's ``os``, ``time`` and
+        ``_supervised_popen`` that simulate harness scheduling lag
+        deterministically.
 
-        From the first EOF the harness reads on a pipe (a captured stream,
-        so the target has exited by then), its monotonic clock reads 1000 s
-        later, as if the harness had been descheduled past the deadline
-        before noticing. EOFs on regular files (read while pinning the
-        command) do not count.
+        From the first EOF the harness reads on one of the supervisor's
+        captured streams (so the target has exited by then), the harness is
+        treated as descheduled past the deadline before noticing: the
+        stand-in first waits until the supervisor has fully exited, as it
+        would have during such a lag, and from then on the monotonic clock
+        reads 1000 s later.
+
+        The wait is what keeps these tests independent of scheduling. The
+        exiting supervisor's stdout and stderr close one after the other,
+        and the harness may run in between (on one busy CPU it usually
+        does). Jumping the clock there would put the deadline before the
+        second EOF, which the harness rightly reports as a timeout: an exit
+        counts only when every stream was already at EOF.
         """
         lag = [0.0]
+        supervisor: dict[str, Any] = {}
+        real_popen = process_module._supervised_popen
+
+        def recording_popen(*args: Any, **kwargs: Any) -> Any:
+            returned = real_popen(*args, **kwargs)
+            process = returned[0]
+            supervisor["streams"] = {
+                process.stdout.fileno(),
+                process.stderr.fileno(),
+            }
+            supervisor["pidfd"] = os.pidfd_open(process.pid)
+            self.addCleanup(os.close, supervisor["pidfd"])
+            return returned
 
         class LaggingOs:
             def __getattr__(self, name: str) -> Any:
@@ -1655,7 +1682,22 @@ time.sleep(2)
 
             def read(self, descriptor: int, size: int) -> bytes:
                 data = os.read(descriptor, size)
-                if not data and stat.S_ISFIFO(os.fstat(descriptor).st_mode):
+                if (
+                    not data
+                    and lag[0] == 0.0
+                    and descriptor in supervisor.get("streams", ())
+                ):
+                    # A pidfd turns readable once the process has exited,
+                    # which the kernel signals only after closing all of
+                    # its descriptors. It does not reap the process.
+                    readable, _, _ = select.select(
+                        [supervisor["pidfd"]], [], [], 30.0
+                    )
+                    if not readable:
+                        raise AssertionError(
+                            "supervisor did not exit after a captured "
+                            "stream reached EOF"
+                        )
                     lag[0] = 1000.0
                 return data
 
@@ -1666,7 +1708,7 @@ time.sleep(2)
             def monotonic(self) -> float:
                 return time.monotonic() + lag[0]
 
-        return LaggingOs(), LaggingTime(), lag
+        return LaggingOs(), LaggingTime(), recording_popen, lag
 
     def test_bounded_communicate_classifies_an_already_exited_process_as_exited(
         self,
@@ -1713,10 +1755,14 @@ time.sleep(2)
     def test_process_exit_noticed_after_the_deadline_is_not_a_timeout(self) -> None:
         # Same "exit noticed after the deadline" case as above, but through
         # run_process with the real supervisor.
-        lagging_os, lagging_time, lag = self._lagging_harness()
+        lagging_os, lagging_time, recording_popen, lag = self._lagging_harness()
         with tempfile.TemporaryDirectory() as temporary, mock.patch.object(
             process_module, "os", lagging_os
-        ), mock.patch.object(process_module, "time", lagging_time):
+        ), mock.patch.object(
+            process_module, "time", lagging_time
+        ), mock.patch.object(
+            process_module, "_supervised_popen", recording_popen
+        ):
             result = run_process(
                 [sys.executable, "-c", "print('out'); raise SystemExit(3)"],
                 timeout=30.0,
@@ -1781,10 +1827,14 @@ time.sleep(2)
     def test_marked_exit_noticed_after_the_deadline_is_not_a_timeout(self) -> None:
         # A marked target that exits early, noticed only after the deadline,
         # is an early exit, not a timeout.
-        lagging_os, lagging_time, lag = self._lagging_harness()
+        lagging_os, lagging_time, recording_popen, lag = self._lagging_harness()
         with tempfile.TemporaryDirectory() as temporary, mock.patch.object(
             process_module, "os", lagging_os
-        ), mock.patch.object(process_module, "time", lagging_time):
+        ), mock.patch.object(
+            process_module, "time", lagging_time
+        ), mock.patch.object(
+            process_module, "_supervised_popen", recording_popen
+        ):
             result = run_marked_process(
                 [sys.executable, "-c", "import sys; sys.stdin.readline(); sys.exit(3)"],
                 ready_input="start\n",
