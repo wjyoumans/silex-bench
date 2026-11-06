@@ -686,7 +686,9 @@ class ProcessTests(unittest.TestCase):
             )
             result = run_process(
                 [sys.executable, "-u", "-c", leader],
-                timeout=0.1,
+                # Generous: the leader must exit before the deadline however
+                # slowly it starts on a loaded or single-CPU runner.
+                timeout=20.0,
                 cwd=Path(temporary),
             )
 
@@ -699,13 +701,26 @@ class ProcessTests(unittest.TestCase):
             time.sleep(0.9)
             self.assertFalse(marker.exists())
 
+    def _read_descendant_pid(self, pid_file: Path) -> int:
+        # The descendant records its pid as soon as it runs; wait for it so a
+        # slow start on a loaded runner cannot look like a kill.
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            text = pid_file.read_text() if pid_file.exists() else ""
+            if text.endswith("\n"):
+                return int(text)
+            time.sleep(0.01)
+        self.fail("descendant never recorded its pid")
+
     def test_process_timeout_kills_descendant_that_escaped_the_session(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            marker = Path(temporary) / "setsid-descendant-survived"
+            pid_file = Path(temporary) / "setsid-descendant-pid"
+            # The descendant outlives any deadline unless it is killed, so the
+            # test does not depend on how long the machine takes to start it.
             descendant = (
-                "import pathlib,time; "
-                "time.sleep(0.4); "
-                f"pathlib.Path({str(marker)!r}).write_text('survived')"
+                "import os,pathlib,time; "
+                f"pathlib.Path({str(pid_file)!r}).write_text('%d\\n' % os.getpid()); "
+                "time.sleep(60)"
             )
             leader = (
                 "import subprocess,sys,time; "
@@ -713,52 +728,42 @@ class ProcessTests(unittest.TestCase):
                 f"{descendant!r}], start_new_session=True, "
                 "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, "
                 "stderr=subprocess.DEVNULL, close_fds=True); "
-                "time.sleep(5)"
+                "time.sleep(60)"
             )
             result = run_process(
                 [sys.executable, "-u", "-c", leader],
-                timeout=0.1,
+                timeout=3.0,
                 cwd=Path(temporary),
             )
 
-            self.assertTrue(result["available"])
+            self.assertTrue(result["available"], result)
             self.assertFalse(result["success"])
             self.assertTrue(result["timeout"])
-            time.sleep(0.5)
-            self.assertFalse(marker.exists())
-
-    def test_process_target_cannot_kill_containment_supervisor(self) -> None:
-        self.skipTest(
-            "out of scope for the trusted-backend harness; testing hostile "
-            "code requires a disposable VM or independently isolated UID/PID "
-            "worker, and supervisor-kill probes are forbidden in a live user "
-            "session"
-        )
+            self._assert_descendant_killed(self._read_descendant_pid(pid_file))
 
     def test_process_timeout_kills_reparented_double_fork_descendant(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            marker = Path(temporary) / "double-fork-descendant-survived"
+            pid_file = Path(temporary) / "double-fork-descendant-pid"
             leader = (
                 "import os,pathlib,time; "
                 "child=os.fork(); "
-                "exec(\"if child == 0:\\n"
-                " os.setsid()\\n"
-                " if os.fork() != 0: os._exit(0)\\n"
-                " time.sleep(0.4)\\n"
-                f" pathlib.Path({str(marker)!r}).write_text('survived')\\n\"); "
-                "os.waitpid(child, 0); time.sleep(5)"
+                "exec(\"if child == 0:\\n\"\n"
+                "\" os.setsid()\\n\"\n"
+                "\" if os.fork() != 0: os._exit(0)\\n\"\n"
+                f"\" pathlib.Path({str(pid_file)!r}).write_text('%d\\\\n' % os.getpid())\\n\"\n"
+                "\" time.sleep(60)\\n\"); "
+                "os.waitpid(child, 0); time.sleep(60)"
             )
             result = run_process(
                 [sys.executable, "-u", "-c", leader],
-                timeout=0.1,
+                timeout=3.0,
                 cwd=Path(temporary),
             )
 
-            self.assertTrue(result["available"])
+            self.assertTrue(result["available"], result)
             self.assertFalse(result["success"])
             self.assertTrue(result["timeout"])
-            time.sleep(0.5)
-            self.assertFalse(marker.exists())
+            self._assert_descendant_killed(self._read_descendant_pid(pid_file))
 
     def test_marked_process_measures_only_target_segment(self) -> None:
         # A bare ">= 0.0" assertion on target_wall_ms would not show that the
@@ -2200,7 +2205,7 @@ sys.stdin.readline()
     )
 
     def _assert_descendant_killed(self, pid: int) -> None:
-        deadline = time.monotonic() + 3.0
+        deadline = time.monotonic() + 10.0
         while time.monotonic() < deadline:
             try:
                 os.kill(pid, 0)
@@ -2372,7 +2377,9 @@ class ThreadGroupMetricTests(unittest.TestCase):
             self.skipTest("/proc is unavailable")
         child = """
 import sys, threading, time
+go = threading.Event()
 def spin():
+    go.wait()
     end = time.process_time() + 0.6
     x = 0
     while time.process_time() < end:
@@ -2381,6 +2388,7 @@ threads = [threading.Thread(target=spin) for _ in range(2)]
 for t in threads: t.start()
 print("UP", flush=True)
 sys.stdin.readline()
+go.set()
 for t in threads: t.join()
 print("DONE", flush=True)
 sys.stdin.readline()
@@ -2409,9 +2417,11 @@ sys.stdin.readline()
             proc.wait(timeout=10)
             proc.stdout.close() if proc.stdout else None
         assert start is not None and end is not None
-        # The GIL serializes the two workers, so the group burns about 0.6 s
-        # in total, and exited threads remain counted; allow for tick
-        # granularity and the worker head start before "UP".
+        # The workers start spinning only after the first sample. Each spins
+        # until the process-wide CPU clock advances 0.6 s past its own start,
+        # so the group burns at least 0.6 s of CPU after the sample however
+        # the scheduler interleaves them, and exited threads remain counted;
+        # the 300 ms bar leaves room for tick granularity.
         self.assertGreater(end - start, 300_000_000)
         self.assertGreater(end, leader * 5)
 
