@@ -18,6 +18,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Iterable
 
+from . import family_columns
 from .contracts import CAMPAIGN_SCHEMA_VERSION, engine_identity_binding
 from .ledger import (
     RunLedger,
@@ -28,7 +29,7 @@ from .ledger import (
 
 
 BOOTSTRAP_SAMPLES = 2_000
-REPORT_RENDERER_VERSION = 3
+REPORT_RENDERER_VERSION = 4
 CONDITIONAL_WORKLOAD = "class_unit_grh"
 _EXPECTED_TIMING_SCOPES = {
     "class_unit_proven": "class_and_unit_group_only",
@@ -288,6 +289,7 @@ def _summary(snapshot: dict[str, Any]) -> dict[str, Any]:
     timing_groups: dict[
         tuple[str, str, str, str, str, str], list[float]
     ] = defaultdict(list)
+    family_references: dict[tuple[str, str], list[float]] = defaultdict(list)
     status_counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     backend_status: dict[tuple[str, str], dict[str, int]] = defaultdict(
         lambda: defaultdict(int)
@@ -345,6 +347,10 @@ def _summary(snapshot: dict[str, Any]) -> dict[str, Any]:
             or not wall_clock
         ):
             continue
+        if backend == "pari" and case["workload"] in family_columns.CLASS_UNIT_WORKLOADS:
+            reading = family_columns.reference_ms(sample.get("internal_timing"))
+            if reading is not None:
+                family_references[(str(case["workload"]), case_key)].append(reading)
         timing_groups[
             (
                 str(case["workload"]),
@@ -443,6 +449,7 @@ def _summary(snapshot: dict[str, Any]) -> dict[str, Any]:
         ),
         "failures": failures,
         "timings": timings,
+        "family_columns": family_columns.family_columns(timings, family_references),
         "agreements": snapshot["agreements"],
     }
 
@@ -954,6 +961,26 @@ def _markdown(
             ]
         )
         lines.extend(_timing_line(row) for row in conditional_timings)
+    for workload, title in (
+        ("class_unit_proven", "Per-family PARI reference sub-columns (proven)"),
+        (CONDITIONAL_WORKLOAD, "Per-family PARI reference sub-columns (GRH-conditional)"),
+    ):
+        table = family_columns.markdown_lines(
+            summary.get("family_columns", []), workload
+        )
+        if table:
+            lines.extend(
+                [
+                    "",
+                    f"## {title}",
+                    "",
+                    "The headline row is unchanged. Sub-columns time PARI "
+                    "quadclassunit by repeated calls (no 1 ms floor); "
+                    "'no unit' means the reference returns no unit.",
+                    "",
+                    *table,
+                ]
+            )
     lines.extend(["", "## Plots", ""])
     if plots.get("generated") is True:
         lines.extend(f"- `{path}`" for path in plots.get("files", []))

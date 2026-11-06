@@ -295,6 +295,34 @@ def _parse_invariants(value: str | None) -> list[str] | None:
 
 _CLASS_UNIT_OPERATIONS = ("class_unit_proven", "class_unit_grh")
 
+# A single getwalltime() pair has 1 ms resolution, so a target that reads
+# below this threshold is re-measured by repeating the call until the total
+# wall time reaches _REPEAT_MIN_TOTAL_MS.  The headline target_internal_*
+# values stay the single-call numbers; the repeat results are extra fields.
+REPEAT_THRESHOLD_MS = 5
+REPEAT_MIN_TOTAL_MS = 50
+_REPEAT_CAP = 1000000
+
+
+def _repeat_program(operation: str) -> str:
+    """GP lines run after the target: repeat timings for sub-ms PARI calls.
+
+    Emits target_repeats / target_repeat_ms when the single-call target wall
+    time is under REPEAT_THRESHOLD_MS (the same bnfinit, plus bnfcertify for
+    the proven route, as the target), and for quadratic fields also
+    quadclassunit_repeats / quadclassunit_repeat_ms for the per-family
+    reference (PARI usersch3.tex, quadclassunit).
+    """
+
+    certify = "bnfcertify(bnf_rep);" if operation == "class_unit_proven" else ""
+    # gp reads one statement per input line, so each construct is one line.
+    return f"""
+rep_min_ms = {REPEAT_MIN_TOTAL_MS};
+rep_cap = {_REPEAT_CAP};
+if (target_internal_wall_ms < {REPEAT_THRESHOLD_MS}, rep_n = 0; rep_t0 = getwalltime(); until (getwalltime() - rep_t0 >= rep_min_ms || rep_n >= rep_cap, bnf_rep = bnfinit(nf, 1); {certify} rep_n++); print("target_repeats=", rep_n); print("target_repeat_ms=", (getwalltime() - rep_t0) / rep_n * 1.));
+if (poldegree(P) == 2, rep_n = 0; rep_t0 = getwalltime(); until (getwalltime() - rep_t0 >= rep_min_ms || rep_n >= rep_cap, qcu = quadclassunit(b.disc); rep_n++); print("quadclassunit_repeats=", rep_n); print("quadclassunit_repeat_ms=", (getwalltime() - rep_t0) / rep_n * 1.); print("quadclassunit_class_order=", qcu.no); print("quadclassunit_class_invariants=", qcu.cyc));
+"""
+
 
 def _programs(request: SampleRequest) -> tuple[str, str, str]:
     polynomial = polynomial_expr(request.field.coefficients_low_to_high)
@@ -356,8 +384,7 @@ print("maximal_order_discriminant=", b.disc);
 print("signature_r1=", b.r1);
 print("signature_r2=", b.r2);
 print("reported_threads=", benchmark_reported_threads);
-quit
-"""
+"""+_repeat_program("class_unit_grh")+"quit\n"
         return ready, target, final
 
     if request.operation == "class_unit_proven":
@@ -389,8 +416,7 @@ print("signature_r1=", b.r1);
 print("signature_r2=", b.r2);
 print("certified=", certified);
 print("reported_threads=", benchmark_reported_threads);
-quit
-"""
+"""+_repeat_program("class_unit_proven")+"quit\n"
         return ready, target, final
 
     if request.operation == "maximal_order":
@@ -516,6 +542,33 @@ def _components(request: SampleRequest, values: dict[str, str]) -> dict[str, Any
     return (
         {request.operation: parse_float(values, key)} if key is not None else {}
     )
+
+
+def _repeat_timing(values: dict[str, str]) -> dict[str, Any] | None:
+    """Repeat-mode timings, or None when no repeat measurement was taken."""
+
+    target_n = parse_int(values, "target_repeats")
+    reference_n = parse_int(values, "quadclassunit_repeats")
+    if target_n is None and reference_n is None:
+        return None
+    repeat: dict[str, Any] = {
+        "min_total_wall_ms": REPEAT_MIN_TOTAL_MS,
+        "threshold_ms": REPEAT_THRESHOLD_MS,
+        "clock": "pari_getwalltime_ms",
+        "target_repeats": target_n,
+        "target_repeat_ms": parse_float(values, "target_repeat_ms"),
+    }
+    if reference_n is not None:
+        repeat["family_reference"] = {
+            "family_reference_name": "quadclassunit",
+            "repeats": reference_n,
+            "repeat_ms": parse_float(values, "quadclassunit_repeat_ms"),
+            "class_order": values.get("quadclassunit_class_order"),
+            "class_invariants": _parse_invariants(
+                values.get("quadclassunit_class_invariants")
+            ),
+        }
+    return repeat
 
 
 def _complete(request: SampleRequest, result: dict[str, Any], certified: bool) -> bool:
@@ -778,6 +831,13 @@ class PariBackend(BackendAdapter):
             "cpu_launcher_sha256": process.get("launcher_executable_sha256"),
             "components_ms": _components(request, values),
         }
+        repeat_timing = (
+            _repeat_timing(values)
+            if request.operation in _CLASS_UNIT_OPERATIONS
+            else None
+        )
+        if repeat_timing is not None:
+            timing["repeat_timing"] = repeat_timing
         error = process.get("error")
         if (
             not success

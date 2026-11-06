@@ -541,7 +541,7 @@ class GrhReportTests(unittest.TestCase):
         self.assertIn("| class_unit_grh | pari | 1 | 0 | 0 | 0 | 1 | 0 |", text)
         self.assertIn("| class_unit_proven | pari | 1 | 0 | 0 | 0 | 0 | 0 |", text)
         self.assertIn("| class_unit_grh | silex | pari | 0 | 1 |", text)
-        self.assertEqual(reporting.REPORT_RENDERER_VERSION, 3)
+        self.assertEqual(reporting.REPORT_RENDERER_VERSION, 4)
 
 
 if __name__ == "__main__":
