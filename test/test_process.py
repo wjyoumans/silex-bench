@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import contextlib
 import fcntl
 import hashlib
 import json
@@ -704,7 +705,7 @@ class ProcessTests(unittest.TestCase):
     def _read_descendant_pid(self, pid_file: Path) -> int:
         # The descendant records its pid as soon as it runs; wait for it so a
         # slow start on a loaded runner cannot look like a kill.
-        deadline = time.monotonic() + 10.0
+        deadline = time.monotonic() + 30.0
         while time.monotonic() < deadline:
             text = pid_file.read_text() if pid_file.exists() else ""
             if text.endswith("\n"):
@@ -712,8 +713,23 @@ class ProcessTests(unittest.TestCase):
             time.sleep(0.01)
         self.fail("descendant never recorded its pid")
 
+    @contextlib.contextmanager
+    def _kill_recorded_pids(self, *pid_files: Path):
+        # Cleanup for a failing test: never leave a 60 s sleeper behind.
+        try:
+            yield
+        finally:
+            for pid_file in pid_files:
+                try:
+                    os.kill(int(pid_file.read_text()), signal.SIGKILL)
+                except (OSError, ValueError):
+                    pass
+
     def test_process_timeout_kills_descendant_that_escaped_the_session(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
+        with tempfile.TemporaryDirectory() as temporary, self._kill_recorded_pids(
+            Path(temporary) / "setsid-descendant-pid",
+            Path(temporary) / "setsid-leader-pid",
+        ):
             pid_file = Path(temporary) / "setsid-descendant-pid"
             # The descendant outlives any deadline unless it is killed, so the
             # test does not depend on how long the machine takes to start it.
@@ -722,8 +738,10 @@ class ProcessTests(unittest.TestCase):
                 f"pathlib.Path({str(pid_file)!r}).write_text('%d\\n' % os.getpid()); "
                 "time.sleep(60)"
             )
+            leader_file = Path(temporary) / "setsid-leader-pid"
             leader = (
-                "import subprocess,sys,time; "
+                "import os,pathlib,subprocess,sys,time; "
+                f"pathlib.Path({str(leader_file)!r}).write_text('%d\\n' % os.getpid()); "
                 "subprocess.Popen([sys.executable, '-c', "
                 f"{descendant!r}], start_new_session=True, "
                 "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, "
@@ -732,7 +750,7 @@ class ProcessTests(unittest.TestCase):
             )
             result = run_process(
                 [sys.executable, "-u", "-c", leader],
-                timeout=3.0,
+                timeout=10.0,
                 cwd=Path(temporary),
             )
 
@@ -741,11 +759,24 @@ class ProcessTests(unittest.TestCase):
             self.assertTrue(result["timeout"])
             self._assert_descendant_killed(self._read_descendant_pid(pid_file))
 
+    def test_process_target_cannot_kill_containment_supervisor(self) -> None:
+        self.skipTest(
+            "out of scope for the trusted-backend harness; testing hostile "
+            "code requires a disposable VM or independently isolated UID/PID "
+            "worker, and supervisor-kill probes are forbidden in a live user "
+            "session"
+        )
+
     def test_process_timeout_kills_reparented_double_fork_descendant(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
+        with tempfile.TemporaryDirectory() as temporary, self._kill_recorded_pids(
+            Path(temporary) / "double-fork-descendant-pid",
+            Path(temporary) / "double-fork-leader-pid",
+        ):
             pid_file = Path(temporary) / "double-fork-descendant-pid"
+            leader_file = Path(temporary) / "double-fork-leader-pid"
             leader = (
                 "import os,pathlib,time; "
+                f"pathlib.Path({str(leader_file)!r}).write_text('%d\\n' % os.getpid()); "
                 "child=os.fork(); "
                 "exec(\"if child == 0:\\n\"\n"
                 "\" os.setsid()\\n\"\n"
@@ -756,7 +787,7 @@ class ProcessTests(unittest.TestCase):
             )
             result = run_process(
                 [sys.executable, "-u", "-c", leader],
-                timeout=3.0,
+                timeout=10.0,
                 cwd=Path(temporary),
             )
 
