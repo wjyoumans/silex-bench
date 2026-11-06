@@ -290,6 +290,7 @@ def _summary(snapshot: dict[str, Any]) -> dict[str, Any]:
         tuple[str, str, str, str, str, str], list[float]
     ] = defaultdict(list)
     family_references: dict[tuple[str, str], list[float]] = defaultdict(list)
+    family_reference_names: dict[tuple[str, str], str] = {}
     status_counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     backend_status: dict[tuple[str, str], dict[str, int]] = defaultdict(
         lambda: defaultdict(int)
@@ -355,6 +356,9 @@ def _summary(snapshot: dict[str, Any]) -> dict[str, Any]:
             reading = family_columns.reference_ms(sample.get("internal_timing"))
             if reading is not None:
                 family_references[(str(case["workload"]), case_key)].append(reading)
+                family_reference_names[(str(case["workload"]), case_key)] = (
+                    family_columns.reference_name(sample.get("internal_timing"))
+                )
         timing_groups[
             (
                 str(case["workload"]),
@@ -453,7 +457,9 @@ def _summary(snapshot: dict[str, Any]) -> dict[str, Any]:
         ),
         "failures": failures,
         "timings": timings,
-        "family_columns": family_columns.family_columns(timings, family_references),
+        "family_columns": family_columns.family_columns(
+            timings, family_references, family_reference_names
+        ),
         "agreements": snapshot["agreements"],
     }
 
@@ -979,8 +985,12 @@ def _markdown(
                     f"## {title}",
                     "",
                     "The headline row is unchanged. Sub-columns time PARI "
-                    "quadclassunit by warm, repeated calls (no 1 ms floor); "
-                    "'no unit' means the reference returns no unit.",
+                    "quadclassunit and the cyclotomic K+ route "
+                    "(galoissubcyclo + bnfinit(K+) + subcyclohminus"
+                    + (" + bnfcertify(K+)" if workload == "class_unit_proven" else "")
+                    + ") by warm, repeated calls (no 1 ms floor); "
+                    "'no unit' means the reference returns no unit, and "
+                    "'partial' means the K+ route gives h only.",
                     "",
                     *table,
                 ]

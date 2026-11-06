@@ -342,7 +342,10 @@ Clock identities remain backend-specific: Silex uses `steady_clock`, Hecke
 uses Julia `time_ns`, PARI uses `getwalltime`, and Magma uses `Realtime`.
 PARI class_unit samples also record `repeat_timing` from `getwalltime`
 repeats, run after the timed target block, for sub-millisecond cases and the
-quadratic family reference.
+quadratic family reference (`quadclassunit`). Cyclotomic fields of degree above
+2 instead record the partial K+ route (`galoissubcyclo`, `bnfinit(K+)`,
+`subcyclohminus`, plus `bnfcertify(K+)` when proven): class number only, no
+structure or generators, and one unit missing when the unit index Q is 2.
 PARI 2.17.3 implements its wall timer in `src/language/init.c` using
 `CLOCK_REALTIME` or `gettimeofday` where available; it is not a monotonic-clock
 guarantee. No monotonic guarantee is claimed for Magma `Realtime`. The

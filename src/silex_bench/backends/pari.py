@@ -311,16 +311,23 @@ def _repeat_program(operation: str) -> str:
     time is under REPEAT_THRESHOLD_MS (the same bnfinit, plus bnfcertify for
     the proven route, as the target), and for quadratic fields also
     quadclassunit_repeats / quadclassunit_repeat_ms for the per-family
-    reference (PARI usersch3.tex, quadclassunit).
+    reference (PARI usersch3.tex, quadclassunit).  For a cyclotomic field
+    Q(zeta_n) of degree above 2 (found by matching polcyclo(n) in GP) it also
+    times the partial K+ route: galoissubcyclo(n, -1) for K+, bnfinit(K+, 1),
+    subcyclohminus(n), plus bnfcertify(K+) on the proven route.  The route
+    returns h only; see family_columns.py for what it omits.
     """
 
     certify = "bnfcertify(bnf_rep);" if operation == "class_unit_proven" else ""
+    kp_certify = "bnfcertify(kp_bnf);" if operation == "class_unit_proven" else ""
     # gp reads one statement per input line, so each construct is one line.
     return f"""
 rep_min_ms = {REPEAT_MIN_TOTAL_MS};
 rep_cap = {_REPEAT_CAP};
 if (target_internal_wall_ms < {REPEAT_THRESHOLD_MS}, rep_n = 0; rep_t0 = getwalltime(); until (getwalltime() - rep_t0 >= rep_min_ms || rep_n >= rep_cap, bnf_rep = bnfinit(nf, 1); {certify} rep_n++); print("target_repeats=", rep_n); print("target_repeat_ms=", (getwalltime() - rep_t0) / rep_n * 1.));
 if (poldegree(P) == 2, rep_n = 0; rep_t0 = getwalltime(); until (getwalltime() - rep_t0 >= rep_min_ms || rep_n >= rep_cap, qcu = quadclassunit(b.disc); rep_n++); print("quadclassunit_repeats=", rep_n); print("quadclassunit_repeat_ms=", (getwalltime() - rep_t0) / rep_n * 1.); print("quadclassunit_class_order=", qcu.no); print("quadclassunit_class_invariants=", qcu.cyc));
+cyc_n = 0; if (poldegree(P) > 2, for (m = poldegree(P) + 1, 2 * poldegree(P)^2 + 2, if (eulerphi(m) == poldegree(P) && polcyclo(m) == P, cyc_n = m; break)));
+if (cyc_n > 0, rep_n = 0; rep_t0 = getwalltime(); until (getwalltime() - rep_t0 >= rep_min_ms || rep_n >= rep_cap, kp_pol = galoissubcyclo(cyc_n, -1); kp_bnf = bnfinit(kp_pol, 1); kp_hminus = subcyclohminus(cyc_n); {kp_certify} rep_n++); print("cyclotomic_kplus_conductor=", cyc_n); print("cyclotomic_kplus_repeats=", rep_n); print("cyclotomic_kplus_repeat_ms=", (getwalltime() - rep_t0) / rep_n * 1.); print("cyclotomic_kplus_h=", kp_bnf.no); print("cyclotomic_kplus_hminus=", kp_hminus));
 """
 
 
@@ -549,7 +556,8 @@ def _repeat_timing(values: dict[str, str]) -> dict[str, Any] | None:
 
     target_n = parse_int(values, "target_repeats")
     reference_n = parse_int(values, "quadclassunit_repeats")
-    if target_n is None and reference_n is None:
+    kplus_n = parse_int(values, "cyclotomic_kplus_repeats")
+    if target_n is None and reference_n is None and kplus_n is None:
         return None
     repeat: dict[str, Any] = {
         "min_total_wall_ms": REPEAT_MIN_TOTAL_MS,
@@ -567,6 +575,15 @@ def _repeat_timing(values: dict[str, str]) -> dict[str, Any] | None:
             "class_invariants": _parse_invariants(
                 values.get("quadclassunit_class_invariants")
             ),
+        }
+    elif kplus_n is not None:
+        repeat["family_reference"] = {
+            "family_reference_name": "cyclotomic_kplus",
+            "repeats": kplus_n,
+            "repeat_ms": parse_float(values, "cyclotomic_kplus_repeat_ms"),
+            "conductor": parse_int(values, "cyclotomic_kplus_conductor"),
+            "kplus_class_order": values.get("cyclotomic_kplus_h"),
+            "hminus": values.get("cyclotomic_kplus_hminus"),
         }
     return repeat
 

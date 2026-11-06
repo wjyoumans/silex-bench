@@ -89,6 +89,54 @@ class RepeatTimingProgramTests(unittest.TestCase):
         self.assertIsNone(_repeat_timing(parse_key_values("class_order=1\n")))
 
 
+class CyclotomicKplusTests(unittest.TestCase):
+    def test_programs_time_the_kplus_route(self) -> None:
+        grh = _programs(_request("class_unit_grh"))[2]
+        proven = _programs(_request("class_unit_proven"))[2]
+        for final in (grh, proven):
+            self.assertIn("polcyclo(m) == P", final)
+            self.assertIn("galoissubcyclo(cyc_n, -1)", final)
+            self.assertIn("bnfinit(kp_pol, 1)", final)
+            self.assertIn("subcyclohminus(cyc_n)", final)
+            self.assertIn('print("cyclotomic_kplus_repeats="', final)
+            self.assertTrue(final.rstrip().endswith("quit"))
+        self.assertIn("bnfcertify(kp_bnf)", proven)
+        self.assertNotIn("bnfcertify(kp_bnf)", grh)
+
+    def test_kplus_fields_are_recorded(self) -> None:
+        repeat = _repeat_timing(
+            parse_key_values(
+                "cyclotomic_kplus_conductor=13\ncyclotomic_kplus_repeats=3\n"
+                "cyclotomic_kplus_repeat_ms=21.5\ncyclotomic_kplus_h=1\n"
+                "cyclotomic_kplus_hminus=[1, 1]\n"
+            )
+        )
+        reference = repeat["family_reference"]
+        self.assertEqual(reference["family_reference_name"], "cyclotomic_kplus")
+        self.assertEqual(reference["repeat_ms"], 21.5)
+        timing = {"repeat_timing": repeat}
+        self.assertEqual(family_columns.reference_ms(timing), 21.5)
+        self.assertEqual(family_columns.reference_name(timing), "cyclotomic_kplus")
+        self.assertEqual(family_columns.reference_name(None), "quadclassunit")
+
+    def test_cyclotomic_column_counts_only_kplus_rows(self) -> None:
+        w = "class_unit_proven"
+        timings = []
+        for case, degree, disc in (("c13", 12, 10**12), ("q3", 2, -3)):
+            timings.append(_row(w, case, "silex", 4.0, degree, disc))
+            timings.append(_row(w, case, "pari", 1.0, degree, disc))
+        refs = {(w, f"{w}:c13"): [2.0], (w, f"{w}:q3"): [0.5]}
+        names = {(w, f"{w}:c13"): "cyclotomic_kplus"}
+        by = {c["column"]: c for c in family_columns.family_columns(timings, refs, names)}
+        self.assertEqual(by["cyclotomic"]["rows"], 1)
+        self.assertAlmostEqual(by["cyclotomic"]["geomean"], 2.0)
+        self.assertEqual(by["imaginary_quadratic"]["rows"], 1)
+        self.assertAlmostEqual(by["imaginary_quadratic"]["geomean"], 8.0)
+        self.assertIn("partial", by["cyclotomic"]["label"])
+        self.assertIn("h only", by["cyclotomic"]["label"])
+        self.assertIn("Q=2", by["cyclotomic"]["label"])
+
+
 def _row(workload, case, backend, median, degree=2, disc=5):
     return {
         "workload": workload,

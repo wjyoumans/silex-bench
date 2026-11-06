@@ -5,10 +5,14 @@ proven route) on every row and is unchanged.  Beside it, quadratic fields are
 also compared with PARI's quadclassunit, which is much faster but returns
 less (PARI usersch3.tex, quadclassunit): exactly for imaginary quadratic
 fields (class group only, no units to omit), and labelled "no unit" for real
-quadratic fields.  The PARI driver times that call by repetition
+quadratic fields.  Cyclotomic fields of degree above 2 are compared with the
+K+ route (galoissubcyclo, bnfinit(K+), subcyclohminus, plus bnfcertify(K+) on
+the proven route), labelled partial: it gives the class number h only, with
+no class group structure or generators, and one unit is missing when the unit
+index Q is 2.  The PARI driver times that call by repetition
 (backends/pari.py), so sub-millisecond readings are not clipped at the 1 ms
-getwalltime resolution.  Further families (the cyclotomic K+ route) add an
-entry to FAMILY_COLUMNS.
+getwalltime resolution.  Further families add an entry to
+FAMILY_COLUMNS.
 """
 
 from __future__ import annotations
@@ -29,7 +33,12 @@ def _quadratic_sign(metrics: Mapping[str, Any]) -> int | None:
     return 1 if disc > 0 else -1
 
 
-# key, label, reference name, row predicate
+KPLUS_REFERENCE = "cyclotomic_kplus"
+_DEFAULT_REFERENCE = "quadclassunit"
+_REFERENCE_DISPLAY = {KPLUS_REFERENCE: "galoissubcyclo + bnfinit(K+) + subcyclohminus (+ bnfcertify(K+) proven)"}
+
+# key, label, reference name, row predicate.  The reference name also selects
+# the reading: a row's PARI sample records which reference it timed.
 FAMILY_COLUMNS: tuple[tuple[str, str, str, Callable[[Mapping[str, Any]], bool]], ...] = (
     (
         "imaginary_quadratic",
@@ -43,7 +52,31 @@ FAMILY_COLUMNS: tuple[tuple[str, str, str, Callable[[Mapping[str, Any]], bool]],
         "quadclassunit",
         lambda metrics: _quadratic_sign(metrics) == 1,
     ),
+    (
+        "cyclotomic",
+        "cyclotomic vs K+ route (partial: h only, no structure or generators; "
+        "one unit missing when Q=2)",
+        KPLUS_REFERENCE,
+        lambda metrics: True,
+    ),
 )
+
+
+def reference_name(internal_timing: Any) -> str:
+    """Name of the family reference a PARI sample timed (quadclassunit if absent)."""
+
+    repeat = (
+        internal_timing.get("repeat_timing")
+        if isinstance(internal_timing, Mapping)
+        else None
+    )
+    reference = repeat.get(REFERENCE_KEY) if isinstance(repeat, Mapping) else None
+    name = (
+        reference.get("family_reference_name")
+        if isinstance(reference, Mapping)
+        else None
+    )
+    return name if isinstance(name, str) else _DEFAULT_REFERENCE
 
 
 def reference_ms(internal_timing: Any) -> float | None:
@@ -77,6 +110,7 @@ def geomean(values: Iterable[float]) -> float | None:
 def family_columns(
     timings: list[Mapping[str, Any]],
     references: Mapping[tuple[str, str], list[float]],
+    reference_names: Mapping[tuple[str, str], str] | None = None,
 ) -> list[dict[str, Any]]:
     """Return one headline plus per-family rows for each class/unit workload.
 
@@ -85,6 +119,8 @@ def family_columns(
     reference readings.  Ratios are Silex median over PARI time, so below 1
     means Silex is faster.  The headline pairs Silex with PARI's single-call
     bnfinit-route target time exactly as the per-case table reports it.
+    `reference_names` maps the same keys to the reference each row timed
+    (default quadclassunit); a column counts only rows whose reference matches.
     """
 
     medians: dict[tuple[str, str, str], tuple[float, Mapping[str, Any]]] = {}
@@ -135,6 +171,10 @@ def family_columns(
                 readings = references.get((workload, case))
                 if silex is None or not readings or not predicate(silex[1]):
                     continue
+                if (reference_names or {}).get(
+                    (workload, case), _DEFAULT_REFERENCE
+                ) != reference:
+                    continue
                 ordered = sorted(readings)
                 middle = len(ordered) // 2
                 ref = (
@@ -169,7 +209,8 @@ def markdown_lines(columns: list[Mapping[str, Any]], workload: str) -> list[str]
     for column in rows:
         value = column["geomean"]
         lines.append(
-            f"| {column['label']} | {column['reference']} | {column['rows']} | "
+            f"| {column['label']} | "
+            f"{_REFERENCE_DISPLAY.get(column['reference'], column['reference'])} | {column['rows']} | "
             + ("-" if value is None else f"{value:.3f}")
             + " |"
         )
