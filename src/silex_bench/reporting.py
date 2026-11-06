@@ -822,6 +822,18 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer.writerows(flattened)
 
 
+def _family_intro(workload: str) -> str:
+    return (
+        "The headline row is unchanged. Sub-columns time PARI "
+        "quadclassunit and the cyclotomic K+ route "
+        "(galoissubcyclo + bnfinit(K+) + subcyclohminus"
+        + (" + bnfcertify(K+)" if workload == "class_unit_proven" else "")
+        + ") by warm, repeated calls (no 1 ms floor); "
+        "'no unit' means the reference returns no unit, and "
+        "'partial' means the K+ route gives h only."
+    )
+
+
 def _markdown(
     snapshot: dict[str, Any],
     summary: dict[str, Any],
@@ -984,13 +996,7 @@ def _markdown(
                     "",
                     f"## {title}",
                     "",
-                    "The headline row is unchanged. Sub-columns time PARI "
-                    "quadclassunit and the cyclotomic K+ route "
-                    "(galoissubcyclo + bnfinit(K+) + subcyclohminus"
-                    + (" + bnfcertify(K+)" if workload == "class_unit_proven" else "")
-                    + ") by warm, repeated calls (no 1 ms floor); "
-                    "'no unit' means the reference returns no unit, and "
-                    "'partial' means the K+ route gives h only.",
+                    _family_intro(workload),
                     "",
                     *table,
                 ]

@@ -106,7 +106,7 @@ class CyclotomicKplusTests(unittest.TestCase):
     def test_kplus_fields_are_recorded(self) -> None:
         repeat = _repeat_timing(
             parse_key_values(
-                "cyclotomic_kplus_conductor=13\ncyclotomic_kplus_repeats=3\n"
+                "cyclotomic_kplus_n=13\ncyclotomic_kplus_repeats=3\n"
                 "cyclotomic_kplus_repeat_ms=21.5\ncyclotomic_kplus_h=1\n"
                 "cyclotomic_kplus_hminus=[1, 1]\n"
             )
@@ -114,6 +114,7 @@ class CyclotomicKplusTests(unittest.TestCase):
         reference = repeat["family_reference"]
         self.assertEqual(reference["family_reference_name"], "cyclotomic_kplus")
         self.assertEqual(reference["repeat_ms"], 21.5)
+        self.assertEqual(reference["cyclotomic_n"], 13)
         timing = {"repeat_timing": repeat}
         self.assertEqual(family_columns.reference_ms(timing), 21.5)
         self.assertEqual(family_columns.reference_name(timing), "cyclotomic_kplus")
@@ -135,6 +136,14 @@ class CyclotomicKplusTests(unittest.TestCase):
         self.assertIn("partial", by["cyclotomic"]["label"])
         self.assertIn("h only", by["cyclotomic"]["label"])
         self.assertIn("Q=2", by["cyclotomic"]["label"])
+        table = "\n".join(family_columns.markdown_lines(list(by.values()), w))
+        self.assertIn("| galoissubcyclo + bnfinit(K+) + subcyclohminus (+ bnfcertify(K+) proven) | 1 |", table)
+
+    def test_report_intro_names_bnfcertify_only_for_proven(self) -> None:
+        import silex_bench.reporting as reporting
+
+        self.assertIn("bnfcertify(K+)", reporting._family_intro("class_unit_proven"))
+        self.assertNotIn("bnfcertify(K+)", reporting._family_intro("class_unit_grh"))
 
 
 def _row(workload, case, backend, median, degree=2, disc=5):

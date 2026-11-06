@@ -327,7 +327,7 @@ rep_cap = {_REPEAT_CAP};
 if (target_internal_wall_ms < {REPEAT_THRESHOLD_MS}, rep_n = 0; rep_t0 = getwalltime(); until (getwalltime() - rep_t0 >= rep_min_ms || rep_n >= rep_cap, bnf_rep = bnfinit(nf, 1); {certify} rep_n++); print("target_repeats=", rep_n); print("target_repeat_ms=", (getwalltime() - rep_t0) / rep_n * 1.));
 if (poldegree(P) == 2, rep_n = 0; rep_t0 = getwalltime(); until (getwalltime() - rep_t0 >= rep_min_ms || rep_n >= rep_cap, qcu = quadclassunit(b.disc); rep_n++); print("quadclassunit_repeats=", rep_n); print("quadclassunit_repeat_ms=", (getwalltime() - rep_t0) / rep_n * 1.); print("quadclassunit_class_order=", qcu.no); print("quadclassunit_class_invariants=", qcu.cyc));
 cyc_n = 0; if (poldegree(P) > 2, for (m = poldegree(P) + 1, 2 * poldegree(P)^2 + 2, if (eulerphi(m) == poldegree(P) && polcyclo(m) == P, cyc_n = m; break)));
-if (cyc_n > 0, rep_n = 0; rep_t0 = getwalltime(); until (getwalltime() - rep_t0 >= rep_min_ms || rep_n >= rep_cap, kp_pol = galoissubcyclo(cyc_n, -1); kp_bnf = bnfinit(kp_pol, 1); kp_hminus = subcyclohminus(cyc_n); {kp_certify} rep_n++); print("cyclotomic_kplus_conductor=", cyc_n); print("cyclotomic_kplus_repeats=", rep_n); print("cyclotomic_kplus_repeat_ms=", (getwalltime() - rep_t0) / rep_n * 1.); print("cyclotomic_kplus_h=", kp_bnf.no); print("cyclotomic_kplus_hminus=", kp_hminus));
+if (cyc_n > 0, rep_n = 0; rep_t0 = getwalltime(); until (getwalltime() - rep_t0 >= rep_min_ms || rep_n >= rep_cap, kp_pol = galoissubcyclo(cyc_n, -1); kp_bnf = bnfinit(kp_pol, 1); kp_hminus = subcyclohminus(cyc_n); {kp_certify} rep_n++); print("cyclotomic_kplus_n=", cyc_n); print("cyclotomic_kplus_repeats=", rep_n); print("cyclotomic_kplus_repeat_ms=", (getwalltime() - rep_t0) / rep_n * 1.); print("cyclotomic_kplus_h=", kp_bnf.no); print("cyclotomic_kplus_hminus=", kp_hminus));
 """
 
 
@@ -581,7 +581,7 @@ def _repeat_timing(values: dict[str, str]) -> dict[str, Any] | None:
             "family_reference_name": "cyclotomic_kplus",
             "repeats": kplus_n,
             "repeat_ms": parse_float(values, "cyclotomic_kplus_repeat_ms"),
-            "conductor": parse_int(values, "cyclotomic_kplus_conductor"),
+            "cyclotomic_n": parse_int(values, "cyclotomic_kplus_n"),
             "kplus_class_order": values.get("cyclotomic_kplus_h"),
             "hminus": values.get("cyclotomic_kplus_hminus"),
         }
