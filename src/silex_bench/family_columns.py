@@ -88,6 +88,9 @@ def family_columns(
     """
 
     medians: dict[tuple[str, str, str], tuple[float, Mapping[str, Any]]] = {}
+    # Rows that differ only in timing scope or wall clock stay separate in the
+    # per-case table; a key seen twice is ambiguous here and is left out.
+    ambiguous: set[tuple[str, str, str]] = set()
     for row in timings:
         if row.get("workload") not in CLASS_UNIT_WORKLOADS:
             continue
@@ -95,10 +98,12 @@ def family_columns(
             continue
         median = row["statistics"].get("median")
         if isinstance(median, (int, float)) and median > 0:
-            medians[(row["workload"], row["case_key"], row["backend"])] = (
-                float(median),
-                row.get("metrics") or {},
-            )
+            key = (row["workload"], row["case_key"], row["backend"])
+            if key in medians:
+                ambiguous.add(key)
+            medians[key] = (float(median), row.get("metrics") or {})
+    for key in ambiguous:
+        del medians[key]
     output: list[dict[str, Any]] = []
     for workload in CLASS_UNIT_WORKLOADS:
         cases = sorted(

@@ -147,8 +147,9 @@ canonical results before its samples can enter a timing summary. Admitted
 samples also require successful timing status and a positive target wall
 clock. A zero-resolution clock can still supply correctness evidence but is
 not timing-eligible. Use matching case and repetition identities for any
-subsequent paired analysis; current built-in reports contain absolute times,
-not speedup ratios.
+subsequent paired analysis. Built-in reports give absolute times and, for the
+class and unit workloads, Silex/PARI geometric-mean ratio rows (below 1 means
+Silex is faster).
 
 ### Thread-count contract
 

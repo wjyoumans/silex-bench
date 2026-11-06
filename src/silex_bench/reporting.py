@@ -347,7 +347,11 @@ def _summary(snapshot: dict[str, Any]) -> dict[str, Any]:
             or not wall_clock
         ):
             continue
-        if backend == "pari" and case["workload"] in family_columns.CLASS_UNIT_WORKLOADS:
+        if (
+            backend == "pari"
+            and variant == "standard"
+            and case["workload"] in family_columns.CLASS_UNIT_WORKLOADS
+        ):
             reading = family_columns.reference_ms(sample.get("internal_timing"))
             if reading is not None:
                 family_references[(str(case["workload"]), case_key)].append(reading)
@@ -975,7 +979,7 @@ def _markdown(
                     f"## {title}",
                     "",
                     "The headline row is unchanged. Sub-columns time PARI "
-                    "quadclassunit by repeated calls (no 1 ms floor); "
+                    "quadclassunit by warm, repeated calls (no 1 ms floor); "
                     "'no unit' means the reference returns no unit.",
                     "",
                     *table,

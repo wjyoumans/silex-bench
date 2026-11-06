@@ -520,6 +520,7 @@ class GrhReportTests(unittest.TestCase):
              for r in summary["agreement_status"]],
             [("class_unit_grh", 0, 1), ("class_unit_proven", 1, 0)],
         )
+        self.assertEqual(summary["family_columns"], [])
         text = reporting._markdown(
             {
                 "state": "complete",

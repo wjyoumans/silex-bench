@@ -340,6 +340,9 @@ does not affect the marker.
 
 Clock identities remain backend-specific: Silex uses `steady_clock`, Hecke
 uses Julia `time_ns`, PARI uses `getwalltime`, and Magma uses `Realtime`.
+PARI class_unit samples also record `repeat_timing` from `getwalltime`
+repeats, run after the timed target block, for sub-millisecond cases and the
+quadratic family reference.
 PARI 2.17.3 implements its wall timer in `src/language/init.c` using
 `CLOCK_REALTIME` or `gettimeofday` where available; it is not a monotonic-clock
 guarantee. No monotonic guarantee is claimed for Magma `Realtime`. The

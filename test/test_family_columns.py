@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import math
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
 from silex_bench import family_columns
 from silex_bench.backends.pari import (
@@ -10,13 +13,10 @@ from silex_bench.backends.pari import (
     _programs,
     _repeat_timing,
 )
+from silex_bench.model import FieldSpec, SampleRequest
 from silex_bench.process import parse_key_values
-from silex_bench.model import SampleRequest
 from test_backend_timing import PariBackend, _pari_class_unit_stdout, context, marked_result
 
-import tempfile
-from pathlib import Path
-from unittest import mock
 
 
 def _request(operation: str) -> SampleRequest:
@@ -141,6 +141,54 @@ class FamilyGroupingTests(unittest.TestCase):
         self.assertIsNone(by["imaginary_quadratic"]["geomean"])
         self.assertEqual(by["headline"]["rows"], 1)
         self.assertIn("-", "\n".join(family_columns.markdown_lines(list(by.values()), w)))
+
+    def test_rows_differing_in_scope_are_not_overwritten(self) -> None:
+        w = "class_unit_proven"
+        a = _row(w, "iq", "silex", 2.0, 2, -47)
+        b = dict(_row(w, "iq", "silex", 8.0, 2, -47), timing_scope="other")
+        timings = [a, b, _row(w, "iq", "pari", 1.0, 2, -47)]
+        by = {c["column"]: c for c in family_columns.family_columns(timings, {})}
+        self.assertEqual(by["headline"]["rows"], 0)
+
+    def test_summary_and_markdown_carry_sub_columns(self) -> None:
+        from silex_bench import reporting
+
+        w = "class_unit_proven"
+        timings = [
+            _row(w, "iq", "silex", 2.0, 2, -47),
+            _row(w, "iq", "pari", 1.0, 2, -47),
+        ]
+        columns = family_columns.family_columns(timings, {(w, f"{w}:iq"): [0.5]})
+        summary = {
+            "primary_clock": "c",
+            "engines": [],
+            "backend_status": [],
+            "agreement_status": [],
+            "backend_exclusions": [],
+            "failures": [],
+            "timings": [],
+            "family_columns": columns,
+        }
+        text = reporting._markdown(
+            {
+                "state": "complete",
+                "fingerprint": "fp",
+                "manifest": {
+                    "machine": {
+                        "requested_cpu": 2,
+                        "cpu_model": "cpu",
+                        "platform": "Linux",
+                        "architecture": "x86_64",
+                    },
+                    "plan": {"suite": "number-field", "execution": {"threads": 1}},
+                },
+            },
+            summary,
+            [],
+            {"generated": False, "reason": "none"},
+        )
+        self.assertIn("Per-family PARI reference sub-columns (proven)", text)
+        self.assertIn("warm, repeated", text)
 
     def test_reference_ms_validation(self) -> None:
         good = {"repeat_timing": {"family_reference": {"repeat_ms": 0.5, "repeats": 10}}}
